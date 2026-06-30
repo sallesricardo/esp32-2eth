@@ -1,0 +1,142 @@
+
+menu "Configuração Dual Ethernet W5500"
+
+config ETH_W5500_ENABLE
+    bool "Habilitar Dual Ethernet W5500"
+    default y
+
+if ETH_W5500_ENABLE
+
+menu "Ethernet W5500 - Interface 1 (MQTT)"
+
+config ETH1_W5500_SPI_HOST
+    int "SPI Host para W5500_1"
+    range 1 2
+    default 1
+    help
+        Selecione o host SPI (1 para HSPI, 2 para VSPI) para o W5500 da Interface 1.
+
+config ETH1_W5500_SPI_MISO
+    int "GPIO MISO para W5500_1"
+    default 12
+
+config ETH1_W5500_SPI_MOSI
+    int "GPIO MOSI para W5500_1"
+    default 13
+
+config ETH1_W5500_SPI_SCLK
+    int "GPIO SCLK para W5500_1"
+    default 14
+
+config ETH1_W5500_SPI_CS
+    int "GPIO CS para W5500_1"
+    default 15
+
+config ETH1_W5500_INT
+    int "GPIO INT para W5500_1"
+    default 36
+
+config ETH1_W5500_RST
+    int "GPIO RST para W5500_1"
+    default 2
+
+config ETH1_STATIC_IP_ADDR
+    string "Endereço IP Estático para W5500_1"
+    default "192.168.1.100"
+    help
+        Endereço IP estático para a Interface 1.
+
+config ETH1_STATIC_GW_ADDR
+    string "Endereço do Gateway para W5500_1"
+    default "192.168.1.1"
+    help
+        Endereço do Gateway para a Interface 1.
+
+config ETH1_STATIC_NETMASK_ADDR
+    string "Máscara de Sub-rede para W5500_1"
+    default "255.255.255.0"
+    help
+        Máscara de sub-rede para a Interface 1.
+
+config ETH1_STATIC_DNS_ADDR
+    string "Endereço DNS para W5500_1"
+    default "8.8.8.8"
+    help
+        Endereço do servidor DNS para a Interface 1.
+
+endmenu # Ethernet W5500 - Interface 1 (MQTT)
+
+menu "Ethernet W5500 - Interface 2 (TCP Server)"
+
+config ETH2_W5500_SPI_HOST
+    int "SPI Host para W5500_2"
+    range 1 2
+    default 2
+    help
+        Selecione o host SPI (1 para HSPI, 2 para VSPI) para o W5500 da Interface 2.
+
+config ETH2_W5500_SPI_MISO
+    int "GPIO MISO para W5500_2"
+    default 19
+
+config ETH2_W5500_SPI_MOSI
+    int "GPIO MOSI para W5500_2"
+    default 23
+
+config ETH2_W5500_SPI_SCLK
+    int "GPIO SCLK para W5500_2"
+    default 18
+
+config ETH2_W5500_SPI_CS
+    int "GPIO CS para W5500_2"
+    default 5
+
+config ETH2_W5500_INT
+    int "GPIO INT para W5500_2"
+    default 35
+
+config ETH2_W5500_RST
+    int "GPIO RST para W5500_2"
+    default 4
+
+config ETH2_STATIC_IP_ADDR
+    string "Endereço IP Estático para W5500_2"
+    default "192.168.2.100"
+    help
+        Endereço IP estático para a Interface 2.
+
+config ETH2_STATIC_GW_ADDR
+    string "Endereço do Gateway para W5500_2"
+    default "192.168.2.1"
+    help
+        Endereço do Gateway para a Interface 2.
+
+config ETH2_STATIC_NETMASK_ADDR
+    string "Máscara de Sub-rede para W5500_2"
+    default "255.255.255.0"
+    help
+        Máscara de sub-rede para a Interface 2.
+
+config ETH2_STATIC_DNS_ADDR
+    string "Endereço DNS para W5500_2"
+    default "8.8.8.8"
+    help
+        Endereço do servidor DNS para a Interface 2.
+
+endmenu # Ethernet W5500 - Interface 2 (TCP Server)
+
+config MQTT_BROKER_URI
+    string "URI do Broker MQTT"
+    default "mqtt://broker.hivemq.com:1883"
+    help
+        URI completa do broker MQTT (ex: mqtt://broker.hivemq.com:1883).
+
+config TCP_SERVER_PORT
+    int "Porta do Servidor TCP"
+    default 3333
+    help
+        Porta na qual o servidor TCP irá escutar por conexões.
+
+endif # ETH_W5500_ENABLE
+
+endmenu # Configuração Dual Ethernet W5500
