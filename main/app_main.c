@@ -241,6 +241,8 @@ CLEAN_UP:
 
 void app_main(void)
 {
+    gpio_install_isr_service(0);
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
