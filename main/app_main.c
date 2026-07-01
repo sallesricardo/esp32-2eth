@@ -1,10 +1,6 @@
-
-#include <stdio.h>
-#include <string.h>
 #include "sdkconfig.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "esp_eth.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -16,10 +12,12 @@
 #include "mqtt_client.h"
 #include "esp_netif_sntp.h"
 #include "esp_netif_types.h"
+#include "esp_eth_driver.h"
 #include "esp_eth_mac_w5500.h"
 #include "esp_eth_phy_w5500.h"
 #include "esp_netif_defaults.h"
-#include "esp_netif.h"
+#include "esp_netif_types.h"
+#include "esp_netif_net_stack.h"
 
 static const char *TAG = "DUAL_ETH";
 

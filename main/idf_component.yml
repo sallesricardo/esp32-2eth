@@ -14,5 +14,5 @@ dependencies:
   #   # `public` flag doesn't have an effect dependencies of the `main` component.
   #   # All dependencies of `main` are public by default.
   #   public: true
-  espressif/w5500: '*'
   espressif/mqtt: '*'
+  espressif/w5500: ^2.0.0
