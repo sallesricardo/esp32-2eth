@@ -100,9 +100,10 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
     // Configuração W5500 Ethernet driver
     spi_device_interface_config_t spi_devcfg = {
         .command_bits = 16, // 0x00 for read, 0x80 for write
-        .address_bits = 16,
+        .address_bits = 8,
+        .dummy_bits = 0,
         .mode = 0,
-        .clock_speed_hz = 2 * 1000 * 1000, // 2MHz
+        .clock_speed_hz = 12 * 1000 * 1000, // 2MHz
         .spics_io_num = cs_gpio,
         .queue_size = 20,
     };
