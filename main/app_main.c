@@ -95,6 +95,7 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
+    ESP_LOGI(TAG, "Initializing SPI bus for W5500...");
     ESP_ERROR_CHECK(spi_bus_initialize(spi_host, &buscfg, SPI_DMA_CH_AUTO));
 
     // Configuração W5500 Ethernet driver
@@ -103,7 +104,7 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
         .address_bits = 8,
         .dummy_bits = 0,
         .mode = 0,
-        .clock_speed_hz = 12 * 1000 * 1000, // 2MHz
+        .clock_speed_hz = 1 * 1000 * 1000, // 2MHz
         .spics_io_num = cs_gpio,
         .queue_size = 20,
     };
@@ -115,11 +116,14 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
     phy_config.phy_addr = 1; // Endereço PHY padrão para W5500
     phy_config.reset_gpio_num = rst_gpio;
 
+    ESP_LOGI(TAG, "Initializing W5500 MAC...");
     esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
+    ESP_LOGI(TAG, "Initializing W5500 PHY...");
     esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_config);
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
     esp_eth_handle_t eth_handle = NULL;
+    ESP_LOGI(TAG, "Installing ETH driver...");
     ESP_ERROR_CHECK(esp_eth_driver_install(&eth_config, &eth_handle));
 
     /* W5500 doesn't have SMI interface, so we don't need to call esp_eth_smi_init */
@@ -129,6 +133,7 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
 
+    ESP_LOGI(TAG, "Stopping DHCP client on the interface...");
     ESP_ERROR_CHECK(esp_netif_dhcpc_stop(eth_netif));
 
     esp_netif_ip_info_t ip_info;
@@ -141,7 +146,9 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
     esp_netif_str_to_ip4(dns_addr_str, &dns_info.ip.u_addr.ip4);
     esp_netif_set_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info);
 
+    ESP_LOGI(TAG, "Attaching ETH driver to the netif...");
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif, eth_handle));
+    ESP_LOGI(TAG, "Starting ETH driver...");
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
     return eth_netif;
@@ -251,15 +258,35 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
 
     // Inicializa a primeira interface Ethernet (MQTT)
+    ESP_LOGI(TAG, "Initializing W5500 #1 (MQTT)...");
     esp_netif_t *eth_netif_1 = eth_w5500_init(
-        ETH1_SPI_HOST, ETH1_MISO_GPIO, ETH1_MOSI_GPIO, ETH1_SCLK_GPIO, ETH1_CS_GPIO, ETH1_INT_GPIO, ETH1_RST_GPIO,
-        CONFIG_ETH1_STATIC_IP_ADDR, CONFIG_ETH1_STATIC_GW_ADDR, CONFIG_ETH1_STATIC_NETMASK_ADDR, CONFIG_ETH1_STATIC_DNS_ADDR
+        ETH1_SPI_HOST,
+        ETH1_MISO_GPIO,
+        ETH1_MOSI_GPIO,
+        ETH1_SCLK_GPIO,
+        ETH1_CS_GPIO,
+        ETH1_INT_GPIO,
+        ETH1_RST_GPIO,
+        CONFIG_ETH1_STATIC_IP_ADDR,
+        CONFIG_ETH1_STATIC_GW_ADDR,
+        CONFIG_ETH1_STATIC_NETMASK_ADDR,
+        CONFIG_ETH1_STATIC_DNS_ADDR
     );
 
     // Inicializa a segunda interface Ethernet (TCP Server)
+    ESP_LOGI(TAG, "Initializing W5500 #2 (TCP Server)...");
     esp_netif_t *eth_netif_2 = eth_w5500_init(
-        ETH2_SPI_HOST, ETH2_MISO_GPIO, ETH2_MOSI_GPIO, ETH2_SCLK_GPIO, ETH2_CS_GPIO, ETH2_INT_GPIO, ETH2_RST_GPIO,
-        CONFIG_ETH2_STATIC_IP_ADDR, CONFIG_ETH2_STATIC_GW_ADDR, CONFIG_ETH2_STATIC_NETMASK_ADDR, CONFIG_ETH2_STATIC_DNS_ADDR
+        ETH2_SPI_HOST,
+        ETH2_MISO_GPIO,
+        ETH2_MOSI_GPIO,
+        ETH2_SCLK_GPIO,
+        ETH2_CS_GPIO,
+        ETH2_INT_GPIO,
+        ETH2_RST_GPIO,
+        CONFIG_ETH2_STATIC_IP_ADDR,
+        CONFIG_ETH2_STATIC_GW_ADDR,
+        CONFIG_ETH2_STATIC_NETMASK_ADDR,
+        CONFIG_ETH2_STATIC_DNS_ADDR
     );
 
     // Inicia o cliente MQTT na primeira interface
