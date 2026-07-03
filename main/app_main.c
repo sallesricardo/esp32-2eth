@@ -85,7 +85,19 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t
 }
 
 // Função de inicialização do W5500
-static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, int mosi_gpio, int sclk_gpio, int cs_gpio, int int_gpio, int rst_gpio, const char* ip_addr_str, const char* gw_addr_str, const char* netmask_addr_str, const char* dns_addr_str)
+static esp_netif_t* eth_w5500_init(
+    spi_host_device_t spi_host, 
+    int miso_gpio,
+    int mosi_gpio,
+    int sclk_gpio,
+    int cs_gpio,
+    int int_gpio,
+    int rst_gpio,
+    const char* ip_addr_str,
+    const char* gw_addr_str,
+    const char* netmask_addr_str,
+    const char* dns_addr_str
+)
 {
     // Configuração SPI bus
     spi_bus_config_t buscfg = {
@@ -113,7 +125,6 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
-    phy_config.phy_addr = 1; // Endereço PHY padrão para W5500
     phy_config.reset_gpio_num = rst_gpio;
 
     ESP_LOGI(TAG, "Initializing W5500 MAC...");
@@ -133,21 +144,22 @@ static esp_netif_t* eth_w5500_init(spi_host_device_t spi_host, int miso_gpio, in
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
 
+    esp_netif_dns_info_t dns_info = {0};
+    esp_netif_str_to_ip4(dns_addr_str, &dns_info.ip.u_addr.ip4);
+    esp_netif_set_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info);
+
+    ESP_LOGI(TAG, "Attaching ETH driver to the netif...");
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+
     ESP_LOGI(TAG, "Stopping DHCP client on the interface...");
     ESP_ERROR_CHECK(esp_netif_dhcpc_stop(eth_netif));
 
-    esp_netif_ip_info_t ip_info;
+    esp_netif_ip_info_t ip_info = {0};
     esp_netif_str_to_ip4(ip_addr_str, &ip_info.ip);
     esp_netif_str_to_ip4(netmask_addr_str, &ip_info.netmask);
     esp_netif_str_to_ip4(gw_addr_str, &ip_info.gw);
     esp_netif_set_ip_info(eth_netif, &ip_info);
 
-    esp_netif_dns_info_t dns_info;
-    esp_netif_str_to_ip4(dns_addr_str, &dns_info.ip.u_addr.ip4);
-    esp_netif_set_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info);
-
-    ESP_LOGI(TAG, "Attaching ETH driver to the netif...");
-    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, eth_handle));
     ESP_LOGI(TAG, "Starting ETH driver...");
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
