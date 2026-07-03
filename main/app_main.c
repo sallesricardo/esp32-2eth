@@ -42,6 +42,17 @@ static const char *TAG = "DUAL_ETH";
 #define ETH2_INT_GPIO       CONFIG_ETH2_W5500_INT
 #define ETH2_RST_GPIO       CONFIG_ETH2_W5500_RST
 
+typedef struct
+{
+    esp_eth_handle_t eth_handle;
+
+    esp_eth_mac_t *mac;
+    esp_eth_phy_t *phy;
+
+    esp_netif_t *netif;
+
+} ethernet_port_t;
+
 // Event handler para Ethernet
 static void eth_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -99,7 +110,10 @@ static esp_netif_t* eth_w5500_init(
     const char* ip_addr_str,
     const char* gw_addr_str,
     const char* netmask_addr_str,
-    const char* dns_addr_str
+    const char* dns_addr_str,
+    const char* if_key,
+    const char* if_desc,
+    int route_prio
 )
 {
     // Configuração SPI bus
@@ -144,15 +158,30 @@ static esp_netif_t* eth_w5500_init(
     /* W5500 doesn't have SMI interface, so we don't need to call esp_eth_smi_start */
 
     // Inicializa esp_netif com IP estático
-    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
-    esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
+    esp_netif_inherent_config_t base_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
+
+    base_cfg.if_key  = if_key;
+    base_cfg.if_desc = if_desc;
+    base_cfg.route_prio = route_prio;
+
+    esp_netif_config_t cfg = {
+        .base   = &base_cfg,
+        .driver = NULL,
+        .stack  = ESP_NETIF_NETSTACK_DEFAULT_ETH,
+    };
+
+    esp_netif_t *eth_netif = esp_netif_new(&cfg);
+
+    assert(eth_netif);
 
     esp_netif_dns_info_t dns_info = {0};
     esp_netif_str_to_ip4(dns_addr_str, &dns_info.ip.u_addr.ip4);
     esp_netif_set_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns_info);
 
     ESP_LOGI(TAG, "Attaching ETH driver to the netif...");
-    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+    void *glue = esp_eth_new_netif_glue(eth_handle);
+    assert(glue);
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, glue));
 
     ESP_LOGI(TAG, "Stopping DHCP client on the interface...");
     ESP_ERROR_CHECK(esp_netif_dhcpc_stop(eth_netif));
@@ -285,7 +314,10 @@ void app_main(void)
         CONFIG_ETH1_STATIC_IP_ADDR,
         CONFIG_ETH1_STATIC_GW_ADDR,
         CONFIG_ETH1_STATIC_NETMASK_ADDR,
-        CONFIG_ETH1_STATIC_DNS_ADDR
+        CONFIG_ETH1_STATIC_DNS_ADDR,
+        "ETH1",
+        "eth1",
+        100
     );
 
     // Inicializa a segunda interface Ethernet (TCP Server)
@@ -301,7 +333,10 @@ void app_main(void)
         CONFIG_ETH2_STATIC_IP_ADDR,
         CONFIG_ETH2_STATIC_GW_ADDR,
         CONFIG_ETH2_STATIC_NETMASK_ADDR,
-        CONFIG_ETH2_STATIC_DNS_ADDR
+        CONFIG_ETH2_STATIC_DNS_ADDR,
+        "ETH2",
+        "eth2",
+        90
     );
 
     // Inicia o cliente MQTT na primeira interface
