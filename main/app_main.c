@@ -192,6 +192,12 @@ static esp_netif_t* eth_w5500_init(
     esp_netif_str_to_ip4(gw_addr_str, &ip_info.gw);
     esp_netif_set_ip_info(eth_netif, &ip_info);
 
+    uint8_t local_mac_addr[6];
+    ESP_ERROR_CHECK(esp_read_mac(local_mac_addr, ESP_MAC_ETH));
+
+    local_mac_addr[5] += route_prio == 100 ? 0 : 1;
+    ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, local_mac_addr));
+
     ESP_LOGI(TAG, "Starting ETH driver...");
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
