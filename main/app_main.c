@@ -195,18 +195,18 @@ static esp_netif_t* eth_w5500_init(
     ESP_LOGI(TAG, "Starting ETH driver...");
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
-    uint8_t mac[6];
+    uint8_t mac_addr[6];
 
     ESP_ERROR_CHECK(
         esp_eth_ioctl(
             eth_handle,
             ETH_CMD_G_MAC_ADDR,
-            mac));
+            mac_addr));
 
     ESP_LOGI(TAG,
         "MAC = %02X:%02X:%02X:%02X:%02X:%02X",
-        mac[0], mac[1], mac[2],
-        mac[3], mac[4], mac[5]);
+        mac_addr[0], mac_addr[1], mac_addr[2],
+        mac_addr[3], mac_addr[4], mac_addr[5]);
 
     return eth_netif;
 }
