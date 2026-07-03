@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "app_main.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES esp_eth esp_event esp_netif esp_driver_spi esp_driver_gpio
+    REQUIRES eth_w5500 mqtt_app tcp_server_app esp_netif esp_event driver esp_driver_gpio
 )
