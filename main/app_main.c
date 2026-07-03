@@ -11,6 +11,7 @@
 #include "lwip/sys.h"
 #include "mqtt_client.h"
 #include "esp_eth.h"
+#include "esp_mac.h"
 #include "esp_eth_mac.h"
 #include "esp_eth_phy.h"
 #include "esp_netif_sntp.h"
