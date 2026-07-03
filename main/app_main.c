@@ -100,7 +100,7 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t
 
 // Função de inicialização do W5500
 static esp_netif_t* eth_w5500_init(
-    spi_host_device_t spi_host, 
+    spi_host_device_t spi_host,
     int miso_gpio,
     int mosi_gpio,
     int sclk_gpio,
