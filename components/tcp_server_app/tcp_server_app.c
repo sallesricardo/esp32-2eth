@@ -1,6 +1,7 @@
 #include "tcp_server_app.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #include "esp_log.h"
@@ -13,13 +14,17 @@ static const char *TAG = "tcp_server";
 
 typedef struct {
     uint16_t port;
+    char *welcome_msg;              // copiado (strdup) em start(), liberado na task
+    tcp_client_connected_cb_t on_client_connected;
 } tcp_server_task_args_t;
 
 static void tcp_server_task(void *pvParameters)
 {
     tcp_server_task_args_t *args = (tcp_server_task_args_t *)pvParameters;
     uint16_t port = args->port;
-    vPortFree(args); // copiado no start(), pode liberar já
+    char *welcome_msg = args->welcome_msg; // ownership passa pra cá
+    tcp_client_connected_cb_t on_client_connected = args->on_client_connected;
+    vPortFree(args); // a struct em si pode ser liberada já; welcome_msg não
 
     char rx_buffer[128];
     char addr_str[64];
@@ -63,6 +68,20 @@ static void tcp_server_task(void *pvParameters)
         }
         ESP_LOGI(TAG, "Socket accepted ip: %s", addr_str);
 
+        // 1. Envia a mensagem de boas-vindas ao cliente que acabou de conectar
+        if (welcome_msg != NULL) {
+            int to_send = strlen(welcome_msg);
+            int sent = send(sock, welcome_msg, to_send, 0);
+            if (sent < 0) {
+                ESP_LOGW(TAG, "Falha ao enviar welcome_msg: errno %d", errno);
+            }
+        }
+
+        // 2. Notifica quem quiser saber que um cliente conectou (ex: publicar no MQTT)
+        if (on_client_connected != NULL) {
+            on_client_connected(addr_str);
+        }
+
         int len;
         do {
             len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
@@ -82,13 +101,20 @@ static void tcp_server_task(void *pvParameters)
     }
 
 CLEAN_UP:
+    if (welcome_msg != NULL) {
+        free(welcome_msg);
+    }
     close(listen_sock);
     vTaskDelete(NULL);
 }
 
-void tcp_server_app_start(uint16_t port)
+void tcp_server_app_start(uint16_t port,
+                           const char *welcome_msg,
+                           tcp_client_connected_cb_t on_client_connected)
 {
     tcp_server_task_args_t *args = pvPortMalloc(sizeof(tcp_server_task_args_t));
     args->port = port;
+    args->welcome_msg = (welcome_msg != NULL) ? strdup(welcome_msg) : NULL;
+    args->on_client_connected = on_client_connected;
     xTaskCreate(tcp_server_task, "tcp_server", 4096, args, 5, NULL);
 }

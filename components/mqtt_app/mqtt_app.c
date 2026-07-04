@@ -11,6 +11,7 @@ static const char *TAG = "mqtt_app";
 // onde esp_mqtt_client_start() é assíncrono e o "restore" acontecia
 // antes da resolução DNS / handshake TCP realmente ocorrerem.
 static esp_netif_t *s_previous_default_netif = NULL;
+static esp_mqtt_client_handle_t s_client = NULL;
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                 int32_t event_id, void *event_data)
@@ -66,5 +67,19 @@ esp_mqtt_client_handle_t mqtt_app_start(esp_netif_t *eth_netif)
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(client));
 
+    s_client = client;
     return client;
+}
+
+int mqtt_app_publish(const char *topic, const char *data, int qos, int retain)
+{
+    if (s_client == NULL) {
+        ESP_LOGW(TAG, "mqtt_app_publish chamado antes de mqtt_app_start");
+        return -1;
+    }
+    int msg_id = esp_mqtt_client_publish(s_client, topic, data, 0, qos, retain);
+    if (msg_id < 0) {
+        ESP_LOGW(TAG, "Falha ao publicar em '%s' (cliente desconectado?)", topic);
+    }
+    return msg_id;
 }

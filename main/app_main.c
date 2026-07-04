@@ -10,6 +10,21 @@
 
 static const char *TAG = "app_main";
 
+#define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
+#define MQTT_TCP_NOTIFY_TOPIC "device/tcp_server/client_connected"
+
+// Chamado pelo tcp_server_app assim que aceita uma nova conexão.
+// Não conhece nada de MQTT diretamente sobre TCP -> quem faz a ponte é o main.
+static void on_tcp_client_connected(const char *client_ip)
+{
+    ESP_LOGI(TAG, "Cliente TCP conectado: %s -> publicando no MQTT", client_ip);
+
+    char payload[96];
+    snprintf(payload, sizeof(payload), "{\"event\":\"tcp_client_connected\",\"ip\":\"%s\"}", client_ip);
+
+    mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
@@ -25,7 +40,7 @@ void app_main(void)
         .cs_gpio         = CONFIG_ETH1_W5500_SPI_CS,
         .int_gpio        = CONFIG_ETH1_W5500_INT,
         .rst_gpio        = CONFIG_ETH1_W5500_RST,
-        .clock_speed_hz  = 20 * 1000 * 1000, // ajuste conforme layout/trilhas
+        .clock_speed_hz  = 80 * 1000 * 1000, // ajuste conforme layout/trilhas
         .ip_addr         = CONFIG_ETH1_STATIC_IP_ADDR,
         .gw_addr         = CONFIG_ETH1_STATIC_GW_ADDR,
         .netmask_addr    = CONFIG_ETH1_STATIC_NETMASK_ADDR,
@@ -45,7 +60,7 @@ void app_main(void)
         .cs_gpio         = CONFIG_ETH2_W5500_SPI_CS,
         .int_gpio        = CONFIG_ETH2_W5500_INT,
         .rst_gpio        = CONFIG_ETH2_W5500_RST,
-        .clock_speed_hz  = 20 * 1000 * 1000,
+        .clock_speed_hz  = 80 * 1000 * 1000,
         .ip_addr         = CONFIG_ETH2_STATIC_IP_ADDR,
         .gw_addr         = CONFIG_ETH2_STATIC_GW_ADDR,
         .netmask_addr    = CONFIG_ETH2_STATIC_NETMASK_ADDR,
@@ -67,8 +82,8 @@ void app_main(void)
         return;
     }
 
-    mqtt_app_start(eth_netif_1);
-    tcp_server_app_start(CONFIG_TCP_SERVER_PORT);
+    mqtt_app_start(eth_netif_2);
+    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG, on_tcp_client_connected);
 
     (void)eth_netif_2; // usado indiretamente: TCP server escuta em INADDR_ANY
 }
