@@ -16,6 +16,7 @@ typedef struct {
     uint16_t port;
     char *welcome_msg;              // copiado (strdup) em start(), liberado na task
     tcp_client_connected_cb_t on_client_connected;
+    tcp_client_on_received_cb_t on_client_received;
 } tcp_server_task_args_t;
 
 static void tcp_server_task(void *pvParameters)
@@ -24,6 +25,7 @@ static void tcp_server_task(void *pvParameters)
     uint16_t port = args->port;
     char *welcome_msg = args->welcome_msg; // ownership passa pra cá
     tcp_client_connected_cb_t on_client_connected = args->on_client_connected;
+    tcp_client_on_received_cb_t on_client_received = args->on_client_received;
     vPortFree(args); // a struct em si pode ser liberada já; welcome_msg não
 
     char rx_buffer[128];
@@ -92,6 +94,7 @@ static void tcp_server_task(void *pvParameters)
             } else {
                 rx_buffer[len] = 0;
                 ESP_LOGI(TAG, "Received %d bytes: %s", len, rx_buffer);
+                on_client_received(len, rx_buffer);
                 // TODO: processar dados binários recebidos
             }
         } while (len > 0);
@@ -110,11 +113,13 @@ CLEAN_UP:
 
 void tcp_server_app_start(uint16_t port,
                            const char *welcome_msg,
-                           tcp_client_connected_cb_t on_client_connected)
+                           tcp_client_connected_cb_t on_client_connected,
+                           tcp_client_on_received_cb_t on_client_received)
 {
     tcp_server_task_args_t *args = pvPortMalloc(sizeof(tcp_server_task_args_t));
     args->port = port;
     args->welcome_msg = (welcome_msg != NULL) ? strdup(welcome_msg) : NULL;
     args->on_client_connected = on_client_connected;
+    args->on_client_received = on_client_received;
     xTaskCreate(tcp_server_task, "tcp_server", 4096, args, 5, NULL);
 }

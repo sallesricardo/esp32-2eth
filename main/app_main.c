@@ -25,6 +25,16 @@ static void on_tcp_client_connected(const char *client_ip)
     mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
 }
 
+static void on_tcp_client_received(size_t len, const char *data)
+{
+    ESP_LOGI(TAG, "Cliente TCP Recebeu dados -> publicando no MQTT");
+
+    char payload[96];
+    snprintf(payload, sizeof(payload), "{\"event\":\"tcp_client_received\",\"data\":\"%.*s\"}", (int)len, data);
+
+    mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
@@ -83,7 +93,7 @@ void app_main(void)
     }
 
     mqtt_app_start(eth_netif_1);
-    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG, on_tcp_client_connected);
+    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG, on_tcp_client_connected, on_tcp_client_received);
 
     (void)eth_netif_2; // usado indiretamente: TCP server escuta em INADDR_ANY
 }

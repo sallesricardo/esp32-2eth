@@ -13,6 +13,7 @@ extern "C" {
  * @param client_ip IP do cliente que acabou de conectar (string, ex: "192.168.1.50")
  */
 typedef void (*tcp_client_connected_cb_t)(const char *client_ip);
+typedef void (*tcp_client_on_received_cb_t)(size_t len, const char *data);
 
 /**
  * @brief Cria a task do servidor TCP na porta informada.
@@ -35,7 +36,9 @@ typedef void (*tcp_client_connected_cb_t)(const char *client_ip);
  */
 void tcp_server_app_start(uint16_t port,
                            const char *welcome_msg,
-                           tcp_client_connected_cb_t on_client_connected);
+                           tcp_client_connected_cb_t on_client_connected,
+                           tcp_client_on_received_cb_t on_client_received
+                        );
 
 
 #ifdef __cplusplus
