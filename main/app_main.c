@@ -1,4 +1,5 @@
 #include "sdkconfig.h"
+#include <stdlib.h>
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
@@ -8,6 +9,8 @@
 #include "mqtt_app.h"
 #include "tcp_server_app.h"
 #include "tcp_client_app.h"
+#include "proxy_events.h"
+#include "esp_timer.h"
 
 static const char *TAG = "app_main";
 
@@ -30,39 +33,80 @@ static void on_tcp_client_connected(const char *client_ip)
 }
 
 // --- Funções de processamento dos dados do proxy (só logging por enquanto) ---
+//
+// Rodam na task do event loop dedicado (proxy_events), NÃO na task de I/O
+// de rede que recebeu o dado — então podem ficar mais pesadas no futuro
+// sem travar a recepção do socket.
 
 // Dados vindos do cliente TCP local (conectado no tcp_server_app), a
 // caminho do host remoto.
-static void process_data_from_tcp_client(const uint8_t *data, size_t len)
+static void process_data_from_tcp_client(const uint8_t *data, size_t len, int64_t latency_us)
 {
     (void)data;
-    ESP_LOGI(TAG, "process_data_from_tcp_client: %d bytes", (int)len);
+    ESP_LOGI(TAG, "process_data_from_tcp_client: %d bytes, latencia recv->processamento: %lld us",
+             (int)len, (long long)latency_us);
     // TODO: implementar processamento
 }
 
 // Dados vindos do host remoto (via tcp_client_app), a caminho do cliente
 // TCP local.
-static void process_data_from_remote_host(const uint8_t *data, size_t len)
+static void process_data_from_remote_host(const uint8_t *data, size_t len, int64_t latency_us)
 {
     (void)data;
-    ESP_LOGI(TAG, "process_data_from_remote_host: %d bytes", (int)len);
+    ESP_LOGI(TAG, "process_data_from_remote_host: %d bytes, latencia recv->processamento: %lld us",
+             (int)len, (long long)latency_us);
     // TODO: implementar processamento
 }
 
-// Chamado pelo tcp_server_app a cada dado recebido do cliente TCP local.
-// Faz a ponta do proxy nesse sentido: processa e encaminha pro host remoto.
-static void on_data_from_tcp_client(const uint8_t *data, size_t len)
+// Handler do PROXY_EVENT_DATA_FROM_TCP_CLIENT, chamado pelo event loop
+// dedicado. Processa e, na sequência, faz a ponta do proxy nesse sentido
+// (encaminha pro host remoto). Dono do evt->data: libera no final.
+static void handle_data_from_tcp_client_event(void *handler_arg, esp_event_base_t base,
+                                               int32_t event_id, void *event_data)
 {
-    process_data_from_tcp_client(data, len);
-    tcp_client_app_send(data, len);
+    (void)handler_arg;
+    (void)base;
+    (void)event_id;
+    proxy_data_event_t *evt = (proxy_data_event_t *)event_data;
+    int64_t latency_us = esp_timer_get_time() - evt->timestamp_us;
+
+    process_data_from_tcp_client(evt->data, evt->len, latency_us);
+    tcp_client_app_send(evt->data, evt->len); // proxy: repassa pro host remoto
+
+    free(evt->data);
 }
 
-// Chamado pelo tcp_client_app a cada dado recebido do host remoto.
-// Faz a ponta do proxy nesse sentido: processa e encaminha pro cliente TCP local.
+// Handler do PROXY_EVENT_DATA_FROM_REMOTE_HOST, chamado pelo event loop
+// dedicado. Processa e, na sequência, faz a ponta do proxy nesse sentido
+// (encaminha pro cliente TCP local). Dono do evt->data: libera no final.
+static void handle_data_from_remote_host_event(void *handler_arg, esp_event_base_t base,
+                                                int32_t event_id, void *event_data)
+{
+    (void)handler_arg;
+    (void)base;
+    (void)event_id;
+    proxy_data_event_t *evt = (proxy_data_event_t *)event_data;
+    int64_t latency_us = esp_timer_get_time() - evt->timestamp_us;
+
+    process_data_from_remote_host(evt->data, evt->len, latency_us);
+    tcp_server_app_send(evt->data, evt->len); // proxy: repassa pro cliente TCP local
+
+    free(evt->data);
+}
+
+// Callback chamado pelo tcp_server_app na própria task de I/O de rede, a
+// cada dado recebido do cliente TCP local. Fica leve de propósito: só
+// copia + timestampa + enfileira no event loop dedicado, sem processar
+// aqui (isso é feito em handle_data_from_tcp_client_event).
+static void on_data_from_tcp_client(const uint8_t *data, size_t len)
+{
+    proxy_events_post_data(PROXY_EVENT_DATA_FROM_TCP_CLIENT, data, len);
+}
+
+// Idem, mas pro lado do tcp_client_app (dado vindo do host remoto).
 static void on_data_from_remote_host(const uint8_t *data, size_t len)
 {
-    process_data_from_remote_host(data, len);
-    tcp_server_app_send(data, len);
+    proxy_events_post_data(PROXY_EVENT_DATA_FROM_REMOTE_HOST, data, len);
 }
 
 void app_main(void)
@@ -123,6 +167,16 @@ void app_main(void)
     }
 
     mqtt_app_start(eth_netif_1);
+
+    // Event loop dedicado do proxy: task própria, fila própria, separada
+    // do loop default (ETH_EVENT/IP_EVENT). O processamento roda aqui,
+    // desacoplado das tasks de I/O de rede do tcp_server_app/tcp_client_app.
+    ESP_ERROR_CHECK(proxy_events_init());
+    ESP_ERROR_CHECK(proxy_events_register_handler(
+        PROXY_EVENT_DATA_FROM_TCP_CLIENT, handle_data_from_tcp_client_event, NULL));
+    ESP_ERROR_CHECK(proxy_events_register_handler(
+        PROXY_EVENT_DATA_FROM_REMOTE_HOST, handle_data_from_remote_host_event, NULL));
+
     tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG,
                           on_tcp_client_connected, on_data_from_tcp_client);
     tcp_client_app_start(REMOTE_HOST_IP, REMOTE_HOST_PORT, on_data_from_remote_host);

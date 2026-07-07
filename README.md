@@ -6,42 +6,74 @@ components/
   mqtt_app/            # cliente MQTT amarrado a um netif específico
   tcp_server_app/      # servidor TCP simples (1 conexão por vez)
   tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
+  proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
 main/
-  app_main.c           # só orquestra: chama os 4 componentes acima e faz o proxy TCP
+  app_main.c           # só orquestra: chama os 5 componentes acima e faz o proxy TCP
 ```
 
-## Proxy TCP (tcp_server_app <-> tcp_client_app)
+## Proxy TCP (tcp_server_app <-> tcp_client_app) via event loop dedicado
 
 O `tcp_client_app` conecta como cliente TCP a `REMOTE_HOST_IP:REMOTE_HOST_PORT`
 (hoje `192.168.1.100:50000`, definido em `main/app_main.c` — **ajuste pro IP
 real**), reconectando automaticamente a cada 3s se a conexão cair.
 
-Nenhum dos dois componentes (`tcp_server_app` e `tcp_client_app`) conhece o
-outro — quem faz a ponte é o `main`, via dois callbacks:
+O processamento dos dados roda num **event loop dedicado** (`proxy_events`),
+separado do loop default usado por `ETH_EVENT`/`IP_EVENT`. Isso significa
+uma task própria só pra processamento, desacoplada das tasks de I/O de rede:
 
-- `on_data_from_tcp_client`: disparado pelo `tcp_server_app` a cada dado
-  recebido do cliente TCP local. Chama `process_data_from_tcp_client()`
-  (hoje só um `ESP_LOGI`) e encaminha os bytes pro host remoto via
-  `tcp_client_app_send()`.
-- `on_data_from_remote_host`: disparado pelo `tcp_client_app` a cada dado
-  recebido do host remoto. Chama `process_data_from_remote_host()` (hoje só
-  um `ESP_LOGI`) e encaminha os bytes pro cliente TCP local via
-  `tcp_server_app_send()`.
+```
+[task tcp_server_app]  --recv()-->  on_data_from_tcp_client()
+                                       -> proxy_events_post_data(PROXY_EVENT_DATA_FROM_TCP_CLIENT, ...)
+                                            (copia os bytes pro heap, tira timestamp, enfileira)
+                                                    |
+                                                    v
+                                    [task proxy_evt_loop] -> handle_data_from_tcp_client_event()
+                                                                -> process_data_from_tcp_client(data, len, latencia)
+                                                                -> tcp_client_app_send(data, len)  // proxy
+                                                                -> free(data)
+```
 
-Ambos `tcp_server_app_send()` e `tcp_client_app_send()` são thread-safe
-(protegidos por mutex), já que são chamados a partir da task do "outro lado"
-do proxy.
+(o caminho inverso, do `tcp_client_app` pro `tcp_server_app`, é simétrico,
+via `PROXY_EVENT_DATA_FROM_REMOTE_HOST`).
+
+**Por que separar assim**: os callbacks `on_data_from_tcp_client` /
+`on_data_from_remote_host`, que rodam *dentro* da task que fez o `recv()`,
+ficam propositalmente leves — só copiam o buffer e enfileiram. Processamento
+pesado (parsing, gravação em flash, etc.) fica isolado na task
+`proxy_evt_loop` e nunca atrasa a leitura do socket. Como bônus, esse
+desenho já resolve o descompasso de velocidade entre interfaces de rede
+diferentes (ex: se um dos lados virar RMII e ficar bem mais rápido que o
+outro em SPI/W5500) sem travar a task de recepção — a fila do event loop
+absorve rajadas até `PROXY_EVENT_QUEUE_SIZE` (16, em `proxy_events.c`)
+eventos pendentes.
+
+**Latência**: cada `proxy_data_event_t` carrega `timestamp_us`, capturado
+com `esp_timer_get_time()` no instante em que o dado foi copiado (logo após
+o `recv()`, antes de entrar na fila). Cada handler calcula
+`esp_timer_get_time() - evt->timestamp_us` e passa como `latency_us` pra
+`process_data_from_tcp_client`/`process_data_from_remote_host`, que hoje só
+logam esse valor. Isso mede o tempo entre "dado chegou na rede" e "task de
+processamento pegou o dado da fila" — ou seja, inclui tempo de fila +
+tempo de espera de scheduling, não só o processamento em si.
 
 **Onde implementar o processamento de verdade**: edite
 `process_data_from_tcp_client()` e `process_data_from_remote_host()` em
-`main/app_main.c`. Elas recebem `(const uint8_t *data, size_t len)` — o
-buffer só é válido durante a chamada, copie o que precisar manter.
+`main/app_main.c`. Recebem `(const uint8_t *data, size_t len, int64_t latency_us)`.
+O buffer (`data`) é liberado pelo handler logo depois de chamar essas
+funções — se for guardar o dado além do escopo da chamada, copie.
+
+**Se a fila encher** (`proxy_events_post_data` não conseguir postar dentro
+de `PROXY_EVENT_POST_TIMEOUT_MS`, hoje 100ms): o dado é descartado e um
+warning é logado — a task de rede não fica bloqueada esperando
+indefinidamente. Ajuste `PROXY_EVENT_QUEUE_SIZE`/`PROXY_EVENT_POST_TIMEOUT_MS`
+em `components/proxy_events/proxy_events.c` conforme a rajada esperada.
 
 **Limitações atuais a considerar**:
 - Assim como o servidor, o proxy assume 1 conexão por vez em cada ponta.
 - Se chegar dado do host remoto **antes** de haver um cliente TCP local
-  conectado, `tcp_server_app_send()` retorna `false` e loga um warning —
-  o dado não é enfileirado. Mesmo comportamento no sentido contrário.
+  conectado, `tcp_server_app_send()` (chamado dentro do handler) retorna
+  `false` e loga um warning — o dado não é reenfileirado. Mesmo
+  comportamento no sentido contrário.
 - O `tcp_client_app` resolve o host via `getaddrinfo`, então tanto IP
   quanto hostname (se você tiver DNS configurado) funcionam.
 
