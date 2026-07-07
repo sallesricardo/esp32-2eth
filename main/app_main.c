@@ -14,8 +14,8 @@ static const char *TAG = "app_main";
 #define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
 #define MQTT_TCP_NOTIFY_TOPIC "device/tcp_server/client_connected"
 
-#define REMOTE_HOST_IP   "192.168.1.100" // TODO: ajustar para o IP real do host remoto
-#define REMOTE_HOST_PORT 50000
+#define REMOTE_HOST_IP   CONFIG_REMOTE_HOST_IP
+#define REMOTE_HOST_PORT CONFIG_REMOTE_HOST_PORT
 
 // Chamado pelo tcp_server_app assim que aceita uma nova conexão.
 // Não conhece nada de MQTT diretamente sobre TCP -> quem faz a ponte é o main.
