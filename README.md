@@ -5,9 +5,45 @@ components/
   eth_w5500/          # driver genérico de uma porta W5500 (SPI + MAC/PHY + netif)
   mqtt_app/            # cliente MQTT amarrado a um netif específico
   tcp_server_app/      # servidor TCP simples (1 conexão por vez)
+  tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
 main/
-  app_main.c           # só orquestra: chama os 3 componentes acima
+  app_main.c           # só orquestra: chama os 4 componentes acima e faz o proxy TCP
 ```
+
+## Proxy TCP (tcp_server_app <-> tcp_client_app)
+
+O `tcp_client_app` conecta como cliente TCP a `REMOTE_HOST_IP:REMOTE_HOST_PORT`
+(hoje `192.168.1.100:50000`, definido em `main/app_main.c` — **ajuste pro IP
+real**), reconectando automaticamente a cada 3s se a conexão cair.
+
+Nenhum dos dois componentes (`tcp_server_app` e `tcp_client_app`) conhece o
+outro — quem faz a ponte é o `main`, via dois callbacks:
+
+- `on_data_from_tcp_client`: disparado pelo `tcp_server_app` a cada dado
+  recebido do cliente TCP local. Chama `process_data_from_tcp_client()`
+  (hoje só um `ESP_LOGI`) e encaminha os bytes pro host remoto via
+  `tcp_client_app_send()`.
+- `on_data_from_remote_host`: disparado pelo `tcp_client_app` a cada dado
+  recebido do host remoto. Chama `process_data_from_remote_host()` (hoje só
+  um `ESP_LOGI`) e encaminha os bytes pro cliente TCP local via
+  `tcp_server_app_send()`.
+
+Ambos `tcp_server_app_send()` e `tcp_client_app_send()` são thread-safe
+(protegidos por mutex), já que são chamados a partir da task do "outro lado"
+do proxy.
+
+**Onde implementar o processamento de verdade**: edite
+`process_data_from_tcp_client()` e `process_data_from_remote_host()` em
+`main/app_main.c`. Elas recebem `(const uint8_t *data, size_t len)` — o
+buffer só é válido durante a chamada, copie o que precisar manter.
+
+**Limitações atuais a considerar**:
+- Assim como o servidor, o proxy assume 1 conexão por vez em cada ponta.
+- Se chegar dado do host remoto **antes** de haver um cliente TCP local
+  conectado, `tcp_server_app_send()` retorna `false` e loga um warning —
+  o dado não é enfileirado. Mesmo comportamento no sentido contrário.
+- O `tcp_client_app` resolve o host via `getaddrinfo`, então tanto IP
+  quanto hostname (se você tiver DNS configurado) funcionam.
 
 ## Por que essa divisão
 

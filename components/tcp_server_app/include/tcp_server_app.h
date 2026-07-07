@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,7 +15,17 @@ extern "C" {
  * @param client_ip IP do cliente que acabou de conectar (string, ex: "192.168.1.50")
  */
 typedef void (*tcp_client_connected_cb_t)(const char *client_ip);
-typedef void (*tcp_client_on_received_cb_t)(size_t len, const char *data);
+
+/**
+ * @brief Callback chamado sempre que dados são recebidos do cliente TCP conectado.
+ *
+ * O buffer é binário (não é uma string terminada em \0) e só é válido durante
+ * a chamada — copie o que precisar se for usar depois de retornar.
+ *
+ * @param data Ponteiro pros bytes recebidos.
+ * @param len Quantidade de bytes recebidos.
+ */
+typedef void (*tcp_server_data_cb_t)(const uint8_t *data, size_t len);
 
 /**
  * @brief Cria a task do servidor TCP na porta informada.
@@ -27,20 +39,37 @@ typedef void (*tcp_client_on_received_cb_t)(size_t len, const char *data);
  *   2. Chama on_client_connected (se não for NULL) — útil para, por
  *      exemplo, publicar uma notificação no MQTT sem o tcp_server_app
  *      precisar conhecer nada sobre MQTT.
+ *   3. A cada dado recebido, chama on_data_received (se não for NULL) —
+ *      útil para encaminhar os dados a outro lugar (ex: um proxy TCP)
+ *      sem o tcp_server_app precisar conhecer o destino.
  *
  * @param port Porta TCP a escutar (ex: CONFIG_TCP_SERVER_PORT).
  * @param welcome_msg Mensagem enviada ao cliente assim que ele conecta.
  *                    Pode ser NULL para não enviar nada.
  * @param on_client_connected Callback opcional (pode ser NULL) chamado a
  *                    cada nova conexão aceita.
+ * @param on_data_received Callback opcional (pode ser NULL) chamado a cada
+ *                    dado recebido do cliente.
  */
 void tcp_server_app_start(uint16_t port,
                            const char *welcome_msg,
                            tcp_client_connected_cb_t on_client_connected,
-                           tcp_client_on_received_cb_t on_client_received
-                        );
+                           tcp_server_data_cb_t on_data_received);
 
+/**
+ * @brief Envia dados para o cliente atualmente conectado (se houver).
+ *
+ * Thread-safe: pode ser chamada de outra task (ex: da task do tcp_client_app,
+ * para fazer o proxy no sentido remoto -> cliente TCP local).
+ *
+ * @param data Bytes a enviar.
+ * @param len Quantidade de bytes.
+ * @return true se enviado com sucesso, false se não há cliente conectado
+ *         ou se ocorreu erro no envio.
+ */
+bool tcp_server_app_send(const uint8_t *data, size_t len);
 
 #ifdef __cplusplus
 }
 #endif
+

@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
@@ -16,8 +17,39 @@ typedef struct {
     uint16_t port;
     char *welcome_msg;              // copiado (strdup) em start(), liberado na task
     tcp_client_connected_cb_t on_client_connected;
-    tcp_client_on_received_cb_t on_client_received;
+    tcp_server_data_cb_t on_data_received;
 } tcp_server_task_args_t;
+
+// Socket do cliente atualmente conectado (-1 = nenhum). Protegido por mutex
+// porque tcp_server_app_send() pode ser chamada de outra task (ex: a task
+// do tcp_client_app fazendo o proxy remoto -> cliente local).
+static int s_client_sock = -1;
+static SemaphoreHandle_t s_sock_mutex = NULL;
+
+static void set_active_socket(int sock)
+{
+    xSemaphoreTake(s_sock_mutex, portMAX_DELAY);
+    s_client_sock = sock;
+    xSemaphoreGive(s_sock_mutex);
+}
+
+bool tcp_server_app_send(const uint8_t *data, size_t len)
+{
+    bool ok = false;
+    xSemaphoreTake(s_sock_mutex, portMAX_DELAY);
+    if (s_client_sock >= 0) {
+        int sent = send(s_client_sock, data, len, 0);
+        if (sent < 0) {
+            ESP_LOGW(TAG, "tcp_server_app_send falhou: errno %d", errno);
+        } else {
+            ok = true;
+        }
+    } else {
+        ESP_LOGW(TAG, "tcp_server_app_send: nenhum cliente conectado");
+    }
+    xSemaphoreGive(s_sock_mutex);
+    return ok;
+}
 
 static void tcp_server_task(void *pvParameters)
 {
@@ -25,7 +57,7 @@ static void tcp_server_task(void *pvParameters)
     uint16_t port = args->port;
     char *welcome_msg = args->welcome_msg; // ownership passa pra cá
     tcp_client_connected_cb_t on_client_connected = args->on_client_connected;
-    tcp_client_on_received_cb_t on_client_received = args->on_client_received;
+    tcp_server_data_cb_t on_data_received = args->on_data_received;
     vPortFree(args); // a struct em si pode ser liberada já; welcome_msg não
 
     char rx_buffer[128];
@@ -70,6 +102,8 @@ static void tcp_server_task(void *pvParameters)
         }
         ESP_LOGI(TAG, "Socket accepted ip: %s", addr_str);
 
+        set_active_socket(sock);
+
         // 1. Envia a mensagem de boas-vindas ao cliente que acabou de conectar
         if (welcome_msg != NULL) {
             int to_send = strlen(welcome_msg);
@@ -86,19 +120,22 @@ static void tcp_server_task(void *pvParameters)
 
         int len;
         do {
-            len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+            len = recv(sock, rx_buffer, sizeof(rx_buffer), 0);
             if (len < 0) {
                 ESP_LOGE(TAG, "Error during receiving: errno %d", errno);
             } else if (len == 0) {
                 ESP_LOGW(TAG, "Connection closed");
             } else {
-                rx_buffer[len] = 0;
-                ESP_LOGI(TAG, "Received %d bytes: %s", len, rx_buffer);
-                on_client_received(len, rx_buffer);
-                // TODO: processar dados binários recebidos
+                ESP_LOGI(TAG, "Received %d bytes from TCP client", len);
+                // 3. Repassa os dados binários recebidos para quem se interessar
+                //    (ex: encaminhar para o tcp_client_app fazer o proxy)
+                if (on_data_received != NULL) {
+                    on_data_received(rx_buffer, (size_t)len);
+                }
             }
         } while (len > 0);
 
+        set_active_socket(-1);
         shutdown(sock, 0);
         close(sock);
     }
@@ -114,12 +151,16 @@ CLEAN_UP:
 void tcp_server_app_start(uint16_t port,
                            const char *welcome_msg,
                            tcp_client_connected_cb_t on_client_connected,
-                           tcp_client_on_received_cb_t on_client_received)
+                           tcp_server_data_cb_t on_data_received)
 {
+    if (s_sock_mutex == NULL) {
+        s_sock_mutex = xSemaphoreCreateMutex();
+    }
+
     tcp_server_task_args_t *args = pvPortMalloc(sizeof(tcp_server_task_args_t));
     args->port = port;
     args->welcome_msg = (welcome_msg != NULL) ? strdup(welcome_msg) : NULL;
     args->on_client_connected = on_client_connected;
-    args->on_client_received = on_client_received;
+    args->on_data_received = on_data_received;
     xTaskCreate(tcp_server_task, "tcp_server", 4096, args, 5, NULL);
 }

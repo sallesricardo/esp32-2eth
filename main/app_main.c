@@ -7,11 +7,15 @@
 #include "eth_w5500.h"
 #include "mqtt_app.h"
 #include "tcp_server_app.h"
+#include "tcp_client_app.h"
 
 static const char *TAG = "app_main";
 
 #define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
 #define MQTT_TCP_NOTIFY_TOPIC "device/tcp_server/client_connected"
+
+#define REMOTE_HOST_IP   "192.168.1.100" // TODO: ajustar para o IP real do host remoto
+#define REMOTE_HOST_PORT 50000
 
 // Chamado pelo tcp_server_app assim que aceita uma nova conexão.
 // Não conhece nada de MQTT diretamente sobre TCP -> quem faz a ponte é o main.
@@ -25,14 +29,40 @@ static void on_tcp_client_connected(const char *client_ip)
     mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
 }
 
-static void on_tcp_client_received(size_t len, const char *data)
+// --- Funções de processamento dos dados do proxy (só logging por enquanto) ---
+
+// Dados vindos do cliente TCP local (conectado no tcp_server_app), a
+// caminho do host remoto.
+static void process_data_from_tcp_client(const uint8_t *data, size_t len)
 {
-    ESP_LOGI(TAG, "Cliente TCP Recebeu dados -> publicando no MQTT");
+    (void)data;
+    ESP_LOGI(TAG, "process_data_from_tcp_client: %d bytes", (int)len);
+    // TODO: implementar processamento
+}
 
-    char payload[96];
-    snprintf(payload, sizeof(payload), "{\"event\":\"tcp_client_received\",\"data\":\"%.*s\"}", (int)len, data);
+// Dados vindos do host remoto (via tcp_client_app), a caminho do cliente
+// TCP local.
+static void process_data_from_remote_host(const uint8_t *data, size_t len)
+{
+    (void)data;
+    ESP_LOGI(TAG, "process_data_from_remote_host: %d bytes", (int)len);
+    // TODO: implementar processamento
+}
 
-    mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
+// Chamado pelo tcp_server_app a cada dado recebido do cliente TCP local.
+// Faz a ponta do proxy nesse sentido: processa e encaminha pro host remoto.
+static void on_data_from_tcp_client(const uint8_t *data, size_t len)
+{
+    process_data_from_tcp_client(data, len);
+    tcp_client_app_send(data, len);
+}
+
+// Chamado pelo tcp_client_app a cada dado recebido do host remoto.
+// Faz a ponta do proxy nesse sentido: processa e encaminha pro cliente TCP local.
+static void on_data_from_remote_host(const uint8_t *data, size_t len)
+{
+    process_data_from_remote_host(data, len);
+    tcp_server_app_send(data, len);
 }
 
 void app_main(void)
@@ -93,7 +123,9 @@ void app_main(void)
     }
 
     mqtt_app_start(eth_netif_1);
-    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG, on_tcp_client_connected, on_tcp_client_received);
+    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG,
+                          on_tcp_client_connected, on_data_from_tcp_client);
+    tcp_client_app_start(REMOTE_HOST_IP, REMOTE_HOST_PORT, on_data_from_remote_host);
 
     (void)eth_netif_2; // usado indiretamente: TCP server escuta em INADDR_ANY
 }
