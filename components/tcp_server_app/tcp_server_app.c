@@ -60,7 +60,7 @@ static void tcp_server_task(void *pvParameters)
     tcp_server_data_cb_t on_data_received = args->on_data_received;
     vPortFree(args); // a struct em si pode ser liberada já; welcome_msg não
 
-    char rx_buffer[128];
+    uint8_t rx_buffer[128];
     char addr_str[64];
     struct sockaddr_in dest_addr = {
         .sin_addr.s_addr = htonl(INADDR_ANY),
