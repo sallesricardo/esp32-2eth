@@ -1,4 +1,3 @@
-#include "sdkconfig.h"
 #include <stdlib.h>
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -11,6 +10,7 @@
 #include "tcp_client_app.h"
 #include "proxy_events.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "app_main";
 

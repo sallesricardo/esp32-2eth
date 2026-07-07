@@ -138,13 +138,13 @@ config TCP_SERVER_PORT
         Porta na qual o servidor TCP irá escutar por conexões.
 
 menu "Configuração Socket Doppler (TCP Client)"
-config CONFIG_REMOTE_HOST_IP
+config REMOTE_HOST_IP
     string "Endereço IP do Host Remoto"
     default "192.168.1.101"
     help
         Endereço IP do host remoto ao qual o cliente TCP irá se conectar.
 
-config CONFIG_REMOTE_HOST_PORT
+config REMOTE_HOST_PORT
     int "Porta do Host Remoto"
     default 50000
     help
