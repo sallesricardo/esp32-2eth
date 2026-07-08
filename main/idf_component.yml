@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espressif/mqtt: '*'
   espressif/w5500: ^2.0.0
+  espressif/cjson: '*'
