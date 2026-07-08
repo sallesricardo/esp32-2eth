@@ -1,5 +1,6 @@
 #include "mqtt_app.h"
 
+#include <stdbool.h>
 #include "esp_log.h"
 #include "sdkconfig.h"
 
@@ -33,6 +34,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
+        if (event->error_handle != NULL) {
+            if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+                ESP_LOGE(TAG, "  transporte/TLS: esp_tls_last_esp_err=0x%x, esp_tls_stack_err=0x%x, sock_errno=%d",
+                         event->error_handle->esp_tls_last_esp_err,
+                         event->error_handle->esp_tls_stack_err,
+                         event->error_handle->esp_transport_sock_errno);
+            } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+                ESP_LOGE(TAG, "  broker recusou conexao, connect_return_code=%d",
+                         event->error_handle->connect_return_code);
+            }
+        }
         break;
     default:
         break;
@@ -41,22 +53,32 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     (void)event;
 }
 
-esp_mqtt_client_handle_t mqtt_app_start(esp_netif_t *eth_netif)
+esp_mqtt_client_handle_t mqtt_app_start(const mqtt_app_config_t *config)
 {
-    if (eth_netif == NULL) {
-        ESP_LOGE(TAG, "eth_netif NULL");
+    if (config == NULL || config->eth_netif == NULL) {
+        ESP_LOGE(TAG, "config ou eth_netif NULL");
+        return NULL;
+    }
+    if (config->ca_cert_pem == NULL) {
+        ESP_LOGE(TAG, "ca_cert_pem NULL — obrigatorio para mqtts:// (pinning da CA do broker)");
         return NULL;
     }
 
+    bool mtls = (config->client_cert_pem != NULL && config->client_key_pem != NULL);
+    ESP_LOGI(TAG, "Iniciando cliente MQTT com %s", mtls ? "mTLS (cert + key do device)" : "TLS unidirecional");
+
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = CONFIG_MQTT_BROKER_URI,
+        .broker.address.uri = CONFIG_MQTT_BROKER_URI, // espera-se "mqtts://host:8883"
+        .broker.verification.certificate = config->ca_cert_pem,
+        .credentials.authentication.certificate = config->client_cert_pem,
+        .credentials.authentication.key = config->client_key_pem,
     };
 
     // Força temporariamente o netif default para garantir que a resolução
     // DNS/conexão inicial saia pela interface correta (ETH1). É restaurado
     // no MQTT_EVENT_CONNECTED acima, não logo após o start().
     s_previous_default_netif = esp_netif_get_default_netif();
-    esp_netif_set_default_netif(eth_netif);
+    esp_netif_set_default_netif(config->eth_netif);
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     if (client == NULL) {

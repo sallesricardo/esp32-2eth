@@ -1,0 +1,11 @@
+# Depois de substituir os placeholders pelos certificados/chave reais,
+# NÃO commite esses arquivos com conteúdo real em repositório compartilhado
+# — especialmente client.key (chave privada do device).
+#
+# Descomente as linhas abaixo depois de colocar os arquivos reais aqui, ou
+# adote outra estratégia (ex: injetar via variável de ambiente/CI, ou
+# provisionamento via NVS por device em vez de embutir no binário).
+#
+# ca.crt
+# client.crt
+# client.key

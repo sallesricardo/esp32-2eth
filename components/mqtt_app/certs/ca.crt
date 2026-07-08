@@ -1,0 +1,8 @@
+# PLACEHOLDER — substitua pelo ca.crt real gerado por scripts/generate_certs.sh
+#
+# Este arquivo existe só pra o projeto compilar "out of the box" antes de
+# você gerar os certificados de verdade. NÃO é um certificado válido — o
+# handshake TLS vai falhar até você substituir por um ca.crt real.
+#
+# Rode scripts/generate_certs.sh no seu PC e copie o conteúdo gerado
+# (out/ca.crt) pra cá.

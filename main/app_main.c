@@ -1,4 +1,5 @@
 #include "sdkconfig.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -14,6 +15,14 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "app_main";
+
+// Símbolos gerados pelo EMBED_TXTFILES do componente mqtt_app (ver
+// components/mqtt_app/CMakeLists.txt). O linker cria esses nomes a partir
+// do caminho do arquivo, com _binary_, o nome do arquivo com "." -> "_", e
+// _start/_end.
+extern const uint8_t mqtt_ca_cert_pem_start[]     asm("_binary_ca_crt_start");
+extern const uint8_t mqtt_client_cert_pem_start[] asm("_binary_client_crt_start");
+extern const uint8_t mqtt_client_key_pem_start[]  asm("_binary_client_key_start");
 
 #define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
 #define MQTT_TCP_NOTIFY_TOPIC "device/tcp_server/client_connected"
@@ -167,7 +176,13 @@ void app_main(void)
         return;
     }
 
-    mqtt_app_start(eth_netif_1);
+    mqtt_app_config_t mqtt_cfg = {
+        .eth_netif = eth_netif_1,
+        .ca_cert_pem = (const char *)mqtt_ca_cert_pem_start,
+        .client_cert_pem = (const char *)mqtt_client_cert_pem_start,
+        .client_key_pem = (const char *)mqtt_client_key_pem_start,
+    };
+    mqtt_app_start(&mqtt_cfg);
 
     // Array de interfaces na mesma ordem referenciada por
     // CONFIG_TCP_PROXY_BIND_ETH_IDX (0 = ETH1, 1 = ETH2). Se adicionar mais

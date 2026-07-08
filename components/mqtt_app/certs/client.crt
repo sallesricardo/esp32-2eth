@@ -1,0 +1,4 @@
+# PLACEHOLDER — substitua pelo client.crt real gerado por scripts/generate_certs.sh
+#
+# Certificado do próprio ESP32 (mTLS), assinado pela CA gerada no PC.
+# Copie de out/client.crt (ou out/<device-id>.crt se você gerar um por device).

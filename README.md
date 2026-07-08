@@ -3,13 +3,19 @@
 ```
 components/
   eth_w5500/          # driver genérico de uma porta W5500 (SPI + MAC/PHY + netif)
-  mqtt_app/            # cliente MQTT amarrado a um netif específico
+  mqtt_app/            # cliente MQTT com mTLS, amarrado a um netif específico
+    certs/              # PLACEHOLDERS -- substitua pelos gerados em scripts/generate_certs.sh
   tcp_server_app/      # servidor TCP simples (1 conexão por vez)
   tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
   proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
 main/
   app_main.c           # só orquestra: chama os 5 componentes acima e faz o proxy TCP
   Kconfig.projbuild    # opção de menuconfig pra fixar o proxy numa interface (ver seção abaixo)
+scripts/
+  generate_certs.sh    # gera CA própria + certs do broker e do ESP32
+mosquitto/
+  mosquitto.conf.example  # config de exemplo do broker (mTLS)
+  acl.example              # ACL de exemplo restringindo tópicos do device
 ```
 
 ## Proxy TCP (tcp_server_app <-> tcp_client_app) via event loop dedicado
@@ -126,6 +132,68 @@ em `components/proxy_events/proxy_events.c` conforme a rajada esperada.
   comportamento no sentido contrário.
 - O `tcp_client_app` resolve o host via `getaddrinfo`, então tanto IP
   quanto hostname (se você tiver DNS configurado) funcionam.
+
+## Segurança do MQTT: mTLS + ACL
+
+O `mqtt_app` agora conecta via `mqtts://` com **TLS mútuo**: o ESP32 valida
+o certificado do broker (pinning via CA própria) e o broker exige um
+certificado válido do ESP32 pra aceitar a conexão. Isso resolve o cenário
+que discutimos: mesmo que o cabo direto PC↔ESP32 vire um link através de
+switch, alguém monitorando o tráfego não consegue nem ler o conteúdo
+(TLS) nem se passar pelo ESP32 (o certificado do device não pode ser
+forjado sem a chave privada correspondente).
+
+### Passo a passo
+
+1. **Gerar os certificados** (no seu PC, não em CI/ambiente compartilhado —
+   as chaves privadas geradas são segredo):
+   ```
+   BROKER_IP=192.168.1.100 CLIENT_CN=esp32-device-01 ./scripts/generate_certs.sh
+   ```
+   Isso cria uma CA própria e assina um certificado pro broker (com o IP
+   dele no SAN) e um pro ESP32, tudo em `out/certs/`.
+
+2. **Copiar pro firmware**: substitua os placeholders em
+   `components/mqtt_app/certs/` pelos arquivos gerados:
+   ```
+   cp out/certs/ca.crt out/certs/client.crt out/certs/client.key \
+      components/mqtt_app/certs/
+   ```
+   Esses arquivos são embutidos no binário via `EMBED_TXTFILES` (ver
+   `components/mqtt_app/CMakeLists.txt`) — não ficam num arquivo separado
+   na flash, viram parte do `.bin` que você grava no ESP32.
+
+3. **Configurar o Mosquitto no PC**: copie `out/certs/ca.crt`,
+   `out/certs/broker.crt` e `out/certs/broker.key` pra onde o Mosquitto vai
+   ler (ex: `/etc/mosquitto/certs/`), e use `mosquitto/mosquitto.conf.example`
+   como base — ele liga `require_certificate true` (é o que torna isso
+   mTLS e não só TLS) e `use_identity_as_username true` (usa o CN do
+   certificado do ESP32 como identidade pro ACL).
+
+4. **Configurar o ACL**: copie `mosquitto/acl.example` pra
+   `/etc/mosquitto/acl.conf` (caminho referenciado no passo 3). Ele
+   restringe o device (`esp32-device-01`) a só publicar em
+   `device/tcp_server/client_connected` — mesmo que o certificado do
+   device seja comprometido, o estrago fica limitado a esse tópico.
+
+5. **Ajustar `CONFIG_MQTT_BROKER_URI`**: no menuconfig, mude pra
+   `mqtts://<ip-do-pc>:8883` (esquema `mqtts://`, porta TLS do Mosquitto).
+
+### O que NÃO está automatizado aqui
+
+- **Provisionamento por device**: hoje um único `client.crt`/`client.key`
+  é embutido no binário — se você tiver mais de um ESP32 no futuro, todos
+  compilariam com a mesma identidade. Pra uma frota, o próximo passo seria
+  gerar um certificado por device (`CLIENT_CN` diferente por unidade) e
+  gravar via NVS/provisionamento individual em vez de embutir no `.bin`
+  compilado uma vez pra todos.
+- **Rotação de certificado**: os certificados gerados têm validade de 10
+  anos (`DAYS_VALID` no script) — adequado pra um par fixo sem
+  infraestrutura de renovação automática, mas se o certificado do ESP32
+  precisar ser revogado antes disso (ex: device comprometido), a forma
+  mais simples aqui é remover a permissão dele no ACL e/ou reemitir com
+  outro `CLIENT_CN`, já que Mosquitto standalone não tem CRL/OCSP por
+  padrão.
 
 ## Por que essa divisão
 

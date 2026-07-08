@@ -1,0 +1,27 @@
+# Exemplo de configuração TLS mútuo (mTLS) do Mosquitto para o par PC <-> ESP32.
+#
+# Copie para /etc/mosquitto/conf.d/mtls.conf (ou mescle no mosquitto.conf
+# principal) e ajuste os caminhos dos certificados conforme onde você
+# colocou os arquivos gerados por scripts/generate_certs.sh.
+
+listener 8883
+protocol mqtt
+
+cafile   /etc/mosquitto/certs/ca.crt
+certfile /etc/mosquitto/certs/broker.crt
+keyfile  /etc/mosquitto/certs/broker.key
+
+# Exige que o cliente (ESP32) apresente um certificado válido assinado
+# pela mesma CA -- é isso que torna isso mTLS, e não só TLS unidirecional.
+require_certificate true
+tls_version tlsv1.2
+
+# Usa o CN do certificado do cliente como "usuário" MQTT -- assim o ACL
+# (veja acl.example) pode referenciar o device pelo nome do certificado,
+# sem precisar de usuário/senha adicional.
+use_identity_as_username true
+
+acl_file /etc/mosquitto/acl.conf
+
+# Se não precisar de um listener sem TLS (ex: 1883) pra debug local, não
+# declare outro "listener" -- deixando só o 8883 acima, só mTLS é aceito.

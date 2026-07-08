@@ -1,0 +1,18 @@
+# Exemplo de ACL do Mosquitto para o device ESP32.
+#
+# Copie para /etc/mosquitto/acl.conf (caminho referenciado em
+# mosquitto.conf.example) e ajuste os tópicos conforme o que o firmware
+# realmente usa (ver MQTT_TCP_NOTIFY_TOPIC em main/app_main.c).
+#
+# "esp32-device-01" precisa bater com o CLIENT_CN usado em
+# scripts/generate_certs.sh -- é o CN do certificado do device, usado como
+# "usuário" graças a use_identity_as_username no mosquitto.conf.
+
+user esp32-device-01
+
+topic write device/tcp_server/client_connected
+
+# Se no futuro o ESP32 também assinar algum tópico de comando/config,
+# adicione explicitamente (o Mosquitto nega por padrão tudo que não está
+# listado aqui, quando um acl_file está configurado):
+# topic read device/tcp_server/cmd
