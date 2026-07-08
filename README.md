@@ -9,6 +9,7 @@ components/
   proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
 main/
   app_main.c           # só orquestra: chama os 5 componentes acima e faz o proxy TCP
+  Kconfig.projbuild    # opção de menuconfig pra fixar o proxy numa interface (ver seção abaixo)
 ```
 
 ## Proxy TCP (tcp_server_app <-> tcp_client_app) via event loop dedicado
@@ -16,6 +17,55 @@ main/
 O `tcp_client_app` conecta como cliente TCP a `REMOTE_HOST_IP:REMOTE_HOST_PORT`
 (hoje `192.168.1.100:50000`, definido em `main/app_main.c` — **ajuste pro IP
 real**), reconectando automaticamente a cada 3s se a conexão cair.
+
+**Ambas as pontas do proxy são fixadas via `idf.py menuconfig`** — em
+"Dual W5500 App Configuration" → "Indice da interface Ethernet para fixar
+o proxy TCP" (`CONFIG_TCP_PROXY_BIND_ETH_IDX`):
+
+- `0` = ETH1 (normalmente reservado ao MQTT)
+- `1` = ETH2 (normalmente reservado ao proxy TCP) — **valor default**
+- `-1` = automático: não fixa em nenhuma interface, deixa a tabela de
+  rotas do lwIP decidir (comportamento antigo)
+
+Em código (`main/app_main.c`), isso é resolvido através de um array
+indexado:
+
+```c
+esp_netif_t *eth_netifs[] = { eth_netif_1, eth_netif_2 };
+esp_netif_t *proxy_bind_netif =
+    (CONFIG_TCP_PROXY_BIND_ETH_IDX >= 0) ? eth_netifs[CONFIG_TCP_PROXY_BIND_ETH_IDX] : NULL;
+```
+
+`proxy_bind_netif` é então passado tanto pro `tcp_server_app_start` quanto
+pro `tcp_client_app_start`. Com o default (`1` = ETH2):
+
+- O servidor só aceita conexões que chegam fisicamente por ETH2 (bind no IP
+  de ETH2 em vez de `INADDR_ANY`), mesmo que o host que conecta também
+  esteja alcançável por ETH1.
+- O cliente sai sempre por ETH2 (bind no IP de ETH2 antes do `connect()`),
+  independente de qual sub-rede o host remoto esteja e de qual interface a
+  tabela de rotas escolheria por padrão.
+
+Sem essa fixação (`-1`), como o servidor originalmente fazia bind em
+`INADDR_ANY` e o cliente não especificava interface de saída, os dois
+sockets do proxy ficariam sujeitos à tabela de rotas do lwIP — o que na
+prática significa que o tráfego do proxy poderia vazar pra ETH1 (a
+interface reservada pro MQTT) dependendo de onde o host remoto estivesse
+na rede, sem nenhum erro visível, só um comportamento diferente do
+esperado.
+
+**Se adicionar um 3º W5500 no futuro**: estenda o array `eth_netifs[]` em
+`main/app_main.c` e o `range` da opção `TCP_PROXY_BIND_ETH_IDX` em
+`main/Kconfig.projbuild` (hoje `-1 1`, viraria `-1 2`).
+
+**Nota sobre `main/Kconfig.projbuild`**: este projeto já referenciava
+`CONFIG_ETH1_*`, `CONFIG_ETH2_*`, `CONFIG_MQTT_BROKER_URI` e
+`CONFIG_TCP_SERVER_PORT`, que presumo já existirem no seu
+`Kconfig.projbuild` real (não incluído neste zip, já que não fazia parte
+do código-fonte original enviado). O arquivo `main/Kconfig.projbuild`
+incluído aqui só tem a nova opção `TCP_PROXY_BIND_ETH_IDX` — **mescle
+com o seu arquivo existente** em vez de substituí-lo, ou o build vai
+reclamar de opções indefinidas (`CONFIG_ETH1_STATIC_IP_ADDR` etc.).
 
 O processamento dos dados roda num **event loop dedicado** (`proxy_events`),
 separado do loop default usado por `ETH_EVENT`/`IP_EVENT`. Isso significa

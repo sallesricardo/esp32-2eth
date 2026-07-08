@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "esp_netif.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,11 +31,17 @@ typedef void (*tcp_client_data_cb_t)(const uint8_t *data, size_t len);
  *
  * @param host Hostname ou IP do host remoto (ex: "192.168.1.100").
  * @param port Porta TCP do host remoto (ex: 50000).
+ * @param bind_netif Se não for NULL, o socket faz bind() no IP dessa
+ *                    interface antes do connect() — força a saída por ela
+ *                    independente do que a tabela de rotas escolheria.
+ *                    Se for NULL, deixa o roteamento decidir (comportamento
+ *                    antigo).
  * @param on_data_received Callback opcional (pode ser NULL) chamado a cada
  *                    dado recebido do host remoto.
  */
 void tcp_client_app_start(const char *host,
                            uint16_t port,
+                           esp_netif_t *bind_netif,
                            tcp_client_data_cb_t on_data_received);
 
 /**

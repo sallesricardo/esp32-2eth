@@ -15,6 +15,7 @@ static const char *TAG = "tcp_server";
 
 typedef struct {
     uint16_t port;
+    esp_netif_t *bind_netif;         // NULL = bind em INADDR_ANY
     char *welcome_msg;              // copiado (strdup) em start(), liberado na task
     tcp_client_connected_cb_t on_client_connected;
     tcp_server_data_cb_t on_data_received;
@@ -55,6 +56,7 @@ static void tcp_server_task(void *pvParameters)
 {
     tcp_server_task_args_t *args = (tcp_server_task_args_t *)pvParameters;
     uint16_t port = args->port;
+    esp_netif_t *bind_netif = args->bind_netif;
     char *welcome_msg = args->welcome_msg; // ownership passa pra cá
     tcp_client_connected_cb_t on_client_connected = args->on_client_connected;
     tcp_server_data_cb_t on_data_received = args->on_data_received;
@@ -67,6 +69,17 @@ static void tcp_server_task(void *pvParameters)
         .sin_family = AF_INET,
         .sin_port = htons(port),
     };
+
+    if (bind_netif != NULL) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(bind_netif, &ip_info) == ESP_OK) {
+            dest_addr.sin_addr.s_addr = ip_info.ip.addr;
+            ESP_LOGI(TAG, "Bind restrito a interface %s (" IPSTR ")",
+                     esp_netif_get_desc(bind_netif), IP2STR(&ip_info.ip));
+        } else {
+            ESP_LOGW(TAG, "Falha ao obter IP de bind_netif, usando INADDR_ANY");
+        }
+    }
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
@@ -149,6 +162,7 @@ CLEAN_UP:
 }
 
 void tcp_server_app_start(uint16_t port,
+                           esp_netif_t *bind_netif,
                            const char *welcome_msg,
                            tcp_client_connected_cb_t on_client_connected,
                            tcp_server_data_cb_t on_data_received)
@@ -159,6 +173,7 @@ void tcp_server_app_start(uint16_t port,
 
     tcp_server_task_args_t *args = pvPortMalloc(sizeof(tcp_server_task_args_t));
     args->port = port;
+    args->bind_netif = bind_netif;
     args->welcome_msg = (welcome_msg != NULL) ? strdup(welcome_msg) : NULL;
     args->on_client_connected = on_client_connected;
     args->on_data_received = on_data_received;

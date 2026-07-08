@@ -151,6 +151,25 @@ config REMOTE_HOST_PORT
         Porta do host remoto ao qual o cliente TCP irá se conectar.
 endmenu # Configuração Socket Doppler (TCP Client)
 
+config TCP_PROXY_BIND_ETH_IDX
+    int "Indice da interface Ethernet para fixar o proxy TCP"
+    range -1 1
+    default 1
+    help
+        Indice no array eth_netifs[] (definido em main/app_main.c) da
+        interface Ethernet em que o proxy TCP (servidor + cliente) deve
+        ser fixado via bind(), tanto para aceitar conexoes quanto para
+        a conexao de saida ao host remoto.
+
+        0  = ETH1 (W5500 #1 - normalmente reservado para o MQTT)
+        1  = ETH2 (W5500 #2 - normalmente reservado ao proxy TCP)
+        -1 = Automatico: nao fixa em nenhuma interface especifica,
+             deixa a tabela de rotas do lwIP escolher com base no IP
+             de destino/origem (comportamento antigo). Sujeito a
+             vazar trafego do proxy para a interface "errada"
+             dependendo da sub-rede do host remoto e do route_prio
+             configurado em cada eth_w5500_config_t.
+
 endif # ETH_W5500_ENABLE
 
 endmenu # Configuração Dual Ethernet W5500

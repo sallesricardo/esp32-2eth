@@ -18,6 +18,7 @@ static const char *TAG = "tcp_client";
 typedef struct {
     char *host;   // strdup'ed em start()
     uint16_t port;
+    esp_netif_t *bind_netif; // NULL = deixa a tabela de rotas escolher a interface
     tcp_client_data_cb_t on_data_received;
 } tcp_client_task_args_t;
 
@@ -54,7 +55,7 @@ bool tcp_client_app_send(const uint8_t *data, size_t len)
 
 // Tenta conectar uma vez. Retorna o socket conectado, ou -1 em caso de falha
 // (já fechando o socket criado, se houver).
-static int try_connect(const char *host, uint16_t port)
+static int try_connect(const char *host, uint16_t port, esp_netif_t *bind_netif)
 {
     struct addrinfo hints = {
         .ai_family = AF_INET,
@@ -77,6 +78,30 @@ static int try_connect(const char *host, uint16_t port)
         return -1;
     }
 
+    // Se bind_netif for informado, fixa o IP de origem ANTES do connect(),
+    // forçando a saída por essa interface independente do que a tabela de
+    // rotas escolheria para o IP de destino.
+    if (bind_netif != NULL) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(bind_netif, &ip_info) == ESP_OK) {
+            struct sockaddr_in local_addr = {
+                .sin_family = AF_INET,
+                .sin_addr.s_addr = ip_info.ip.addr,
+                .sin_port = 0, // porta efêmera, o SO escolhe
+            };
+            if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
+                ESP_LOGW(TAG, "Falha ao fixar interface de saída (bind): errno %d", errno);
+                close(sock);
+                freeaddrinfo(res);
+                return -1;
+            }
+            ESP_LOGI(TAG, "Saida fixada na interface %s (" IPSTR ")",
+                     esp_netif_get_desc(bind_netif), IP2STR(&ip_info.ip));
+        } else {
+            ESP_LOGW(TAG, "Falha ao obter IP de bind_netif, deixando roteamento decidir");
+        }
+    }
+
     ESP_LOGI(TAG, "Conectando a %s:%u...", host, port);
     if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
         ESP_LOGW(TAG, "Falha ao conectar a %s:%u: errno %d", host, port, errno);
@@ -95,13 +120,14 @@ static void tcp_client_task(void *pvParameters)
     tcp_client_task_args_t *args = (tcp_client_task_args_t *)pvParameters;
     char *host = args->host; // ownership passa pra cá
     uint16_t port = args->port;
+    esp_netif_t *bind_netif = args->bind_netif;
     tcp_client_data_cb_t on_data_received = args->on_data_received;
     vPortFree(args);
 
     uint8_t rx_buffer[128];
 
     while (1) {
-        int sock = try_connect(host, port);
+        int sock = try_connect(host, port, bind_netif);
         if (sock < 0) {
             vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS));
             continue;
@@ -133,7 +159,8 @@ static void tcp_client_task(void *pvParameters)
     }
 }
 
-void tcp_client_app_start(const char *host, uint16_t port, tcp_client_data_cb_t on_data_received)
+void tcp_client_app_start(const char *host, uint16_t port, esp_netif_t *bind_netif,
+                           tcp_client_data_cb_t on_data_received)
 {
     if (s_sock_mutex == NULL) {
         s_sock_mutex = xSemaphoreCreateMutex();
@@ -142,6 +169,7 @@ void tcp_client_app_start(const char *host, uint16_t port, tcp_client_data_cb_t 
     tcp_client_task_args_t *args = pvPortMalloc(sizeof(tcp_client_task_args_t));
     args->host = strdup(host);
     args->port = port;
+    args->bind_netif = bind_netif;
     args->on_data_received = on_data_received;
     xTaskCreate(tcp_client_task, "tcp_client", 4096, args, 5, NULL);
 }

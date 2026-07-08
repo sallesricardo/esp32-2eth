@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "esp_netif.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,11 @@ typedef void (*tcp_server_data_cb_t)(const uint8_t *data, size_t len);
  *      sem o tcp_server_app precisar conhecer o destino.
  *
  * @param port Porta TCP a escutar (ex: CONFIG_TCP_SERVER_PORT).
+ * @param bind_netif Se não for NULL, o socket de escuta faz bind() no IP
+ *                    dessa interface específica — só aceita conexões que
+ *                    chegarem fisicamente por ela, ignorando as demais.
+ *                    Se for NULL, faz bind em INADDR_ANY (aceita por
+ *                    qualquer interface, comportamento antigo).
  * @param welcome_msg Mensagem enviada ao cliente assim que ele conecta.
  *                    Pode ser NULL para não enviar nada.
  * @param on_client_connected Callback opcional (pode ser NULL) chamado a
@@ -52,6 +58,7 @@ typedef void (*tcp_server_data_cb_t)(const uint8_t *data, size_t len);
  *                    dado recebido do cliente.
  */
 void tcp_server_app_start(uint16_t port,
+                           esp_netif_t *bind_netif,
                            const char *welcome_msg,
                            tcp_client_connected_cb_t on_client_connected,
                            tcp_server_data_cb_t on_data_received);

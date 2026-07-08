@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include <stdlib.h>
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -168,6 +169,24 @@ void app_main(void)
 
     mqtt_app_start(eth_netif_1);
 
+    // Array de interfaces na mesma ordem referenciada por
+    // CONFIG_TCP_PROXY_BIND_ETH_IDX (0 = ETH1, 1 = ETH2). Se adicionar mais
+    // W5500 no futuro, é só estender esse array e o range no Kconfig.projbuild.
+    esp_netif_t *eth_netifs[] = { eth_netif_1, eth_netif_2 };
+    const int proxy_bind_idx = CONFIG_TCP_PROXY_BIND_ETH_IDX;
+
+    esp_netif_t *proxy_bind_netif = NULL;
+    if (proxy_bind_idx >= 0 && proxy_bind_idx < (int)(sizeof(eth_netifs) / sizeof(eth_netifs[0]))) {
+        proxy_bind_netif = eth_netifs[proxy_bind_idx];
+        ESP_LOGI(TAG, "Proxy TCP fixado na interface: %s (indice %d)",
+                 esp_netif_get_desc(proxy_bind_netif), proxy_bind_idx);
+    } else if (proxy_bind_idx == -1) {
+        ESP_LOGI(TAG, "Proxy TCP: bind automatico (tabela de rotas do lwIP decide)");
+    } else {
+        ESP_LOGW(TAG, "CONFIG_TCP_PROXY_BIND_ETH_IDX=%d fora do range esperado, "
+                       "usando automatico (tabela de rotas)", proxy_bind_idx);
+    }
+
     // Event loop dedicado do proxy: task própria, fila própria, separada
     // do loop default (ETH_EVENT/IP_EVENT). O processamento roda aqui,
     // desacoplado das tasks de I/O de rede do tcp_server_app/tcp_client_app.
@@ -177,9 +196,7 @@ void app_main(void)
     ESP_ERROR_CHECK(proxy_events_register_handler(
         PROXY_EVENT_DATA_FROM_REMOTE_HOST, handle_data_from_remote_host_event, NULL));
 
-    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, TCP_WELCOME_MSG,
+    tcp_server_app_start(CONFIG_TCP_SERVER_PORT, proxy_bind_netif, TCP_WELCOME_MSG,
                           on_tcp_client_connected, on_data_from_tcp_client);
-    tcp_client_app_start(REMOTE_HOST_IP, REMOTE_HOST_PORT, on_data_from_remote_host);
-
-    (void)eth_netif_2; // usado indiretamente: TCP server escuta em INADDR_ANY
+    tcp_client_app_start(REMOTE_HOST_IP, REMOTE_HOST_PORT, proxy_bind_netif, on_data_from_remote_host);
 }
