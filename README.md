@@ -195,6 +195,28 @@ forjado sem a chave privada correspondente).
   outro `CLIENT_CN`, já que Mosquitto standalone não tem CRL/OCSP por
   padrão.
 
+## Payload MQTT: cJSON em vez de snprintf
+
+`on_tcp_client_connected` (em `main/app_main.c`) monta o payload JSON com
+`cJSON` (componente `json`, já embutido no ESP-IDF — sem dependência
+externa) em vez de `snprintf` manual. Motivo: qualquer valor interpolado
+(como `client_ip`) recebe escaping automático, o que importa porque esse
+dado passa por rede não totalmente confiável no modelo de ameaça deste
+projeto. Também fica mais fácil adicionar campos novos (ex: quando
+`process_data_from_tcp_client`/`process_data_from_remote_host` passarem a
+publicar telemetria) sem recalcular tamanho de buffer manualmente.
+
+Padrão usado:
+```c
+cJSON *root = cJSON_CreateObject();
+cJSON_AddStringToObject(root, "event", "tcp_client_connected");
+cJSON_AddStringToObject(root, "ip", client_ip);
+char *payload = cJSON_PrintUnformatted(root);
+cJSON_Delete(root);
+mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, 1, 0);
+cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_free, não free()
+```
+
 ## Por que essa divisão
 
 - **eth_w5500**: recebe uma `eth_w5500_config_param_t` (uma struct em vez de 13

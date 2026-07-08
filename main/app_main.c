@@ -12,7 +12,7 @@
 #include "tcp_client_app.h"
 #include "proxy_events.h"
 #include "esp_timer.h"
-#include "sdkconfig.h"
+#include "cJSON.h"
 
 static const char *TAG = "app_main";
 
@@ -36,10 +36,23 @@ static void on_tcp_client_connected(const char *client_ip)
 {
     ESP_LOGI(TAG, "Cliente TCP conectado: %s -> publicando no MQTT", client_ip);
 
-    char payload[96];
-    snprintf(payload, sizeof(payload), "{\"event\":\"tcp_client_connected\",\"ip\":\"%s\"}", client_ip);
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        ESP_LOGE(TAG, "cJSON_CreateObject falhou (sem memoria?), notificacao MQTT descartada");
+        return;
+    }
+    cJSON_AddStringToObject(root, "event", "tcp_client_connected");
+    cJSON_AddStringToObject(root, "ip", client_ip); // escapado automaticamente pelo cJSON
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload == NULL) {
+        ESP_LOGE(TAG, "cJSON_PrintUnformatted falhou, notificacao MQTT descartada");
+        return;
+    }
 
     mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
+    cJSON_free(payload); // cJSON_PrintUnformatted aloca via cJSON_malloc; libera com cJSON_free
 }
 
 // --- Funções de processamento dos dados do proxy (só logging por enquanto) ---
