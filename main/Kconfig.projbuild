@@ -1,9 +1,48 @@
 
 menu "Configuração Dual Ethernet W5500"
 
+choice NETIF_BACKEND
+    prompt "Backend de rede"
+    default NETIF_BACKEND_W5500
+    help
+        W5500 dual (produção): usa os dois módulos W5500 físicos (ESP32-S3),
+        exatamente como validado em bancada.
+
+        Wi-Fi STA (teste sem W5500): sobe UMA interface Wi-Fi e a usa tanto
+        para o papel de ETH1 (MQTT) quanto ETH2 (proxy TCP). Serve pra testar
+        a lógica de aplicação (mqtt_app, tcp_server_app, tcp_client_app,
+        proxy_events) numa ESP32 qualquer, sem os módulos W5500 disponíveis.
+        NÃO valida a separação real de tráfego entre interfaces — isso só
+        existe com 2 NICs físicas — nem roda em ESP32-S3 vs ESP32 clássico
+        (ambos suportam Wi-Fi STA normalmente).
+
+config NETIF_BACKEND_W5500
+    bool "Dual W5500 (produção)"
+
+config NETIF_BACKEND_WIFI
+    bool "Wi-Fi STA (teste de bancada sem W5500)"
+
+endchoice # NETIF_BACKEND
+
+if NETIF_BACKEND_WIFI
+
+config TEST_WIFI_SSID
+    string "SSID Wi-Fi (modo de teste)"
+    default "changeme"
+    help
+        Rede Wi-Fi usada apenas no modo de teste (NETIF_BACKEND_WIFI), pra
+        simular as interfaces ETH1/ETH2 numa ESP32 sem W5500.
+
+config TEST_WIFI_PASSWORD
+    string "Senha Wi-Fi (modo de teste)"
+    default "changeme"
+
+endif # NETIF_BACKEND_WIFI
+
 config ETH_W5500_ENABLE
     bool "Habilitar Dual Ethernet W5500"
     default y
+    depends on NETIF_BACKEND_W5500
 
 if ETH_W5500_ENABLE
 
@@ -125,6 +164,14 @@ config ETH2_STATIC_DNS_ADDR
 
 endmenu # Ethernet W5500 - Interface 2 (TCP Server)
 
+endif # ETH_W5500_ENABLE
+
+# As configs abaixo (broker MQTT, porta TCP, host remoto, bind do proxy) são
+# comuns aos dois backends (W5500 e Wi-Fi de teste) — por isso ficam FORA do
+# bloco "if ETH_W5500_ENABLE": no modo de teste não existem CONFIG_ETH1_*/
+# CONFIG_ETH2_* (GPIOs/IPs dos W5500), mas o app_main.c ainda usa
+# CONFIG_MQTT_BROKER_URI, CONFIG_TCP_SERVER_PORT etc. normalmente.
+
 config MQTT_BROKER_URI
     string "URI do Broker MQTT"
     default "mqtt://broker.hivemq.com:1883"
@@ -169,7 +216,5 @@ config TCP_PROXY_BIND_ETH_IDX
              vazar trafego do proxy para a interface "errada"
              dependendo da sub-rede do host remoto e do route_prio
              configurado em cada eth_w5500_config_t.
-
-endif # ETH_W5500_ENABLE
 
 endmenu # Configuração Dual Ethernet W5500

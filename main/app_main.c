@@ -14,6 +14,13 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 
+#if CONFIG_NETIF_BACKEND_WIFI
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#endif
+
 static const char *TAG = "app_main";
 
 // Símbolos gerados pelo EMBED_TXTFILES do componente mqtt_app (ver
@@ -132,15 +139,97 @@ static void on_data_from_remote_host(const uint8_t *data, size_t len)
     proxy_events_post_data(PROXY_EVENT_DATA_FROM_REMOTE_HOST, data, len);
 }
 
+#if CONFIG_NETIF_BACKEND_WIFI
+// --- Modo de teste de bancada (sem W5500) ---
+//
+// Sobe UMA interface Wi-Fi STA e a usa tanto pro papel de ETH1 (MQTT) quanto
+// ETH2 (proxy TCP) — a ESP32 clássica só tem um rádio, então não dá pra
+// simular duas interfaces físicas de verdade aqui. Serve só pra exercitar a
+// lógica de app (mqtt_app, tcp_server_app, tcp_client_app, proxy_events)
+// sem depender do hardware W5500. Trocar de volta pra produção é só voltar
+// NETIF_BACKEND pra W5500 no menuconfig — nenhum código de app foi alterado.
+#define WIFI_TEST_CONNECTED_BIT BIT0
+static EventGroupHandle_t s_wifi_test_event_group;
+
+static void wifi_test_event_handler(void *arg, esp_event_base_t base,
+                                     int32_t event_id, void *event_data)
+{
+    (void)arg;
+    (void)event_data;
+    if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGW(TAG, "[teste] Wi-Fi desconectado, tentando reconectar...");
+        xEventGroupClearBits(s_wifi_test_event_group, WIFI_TEST_CONNECTED_BIT);
+        esp_wifi_connect();
+    } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ESP_LOGI(TAG, "[teste] Wi-Fi conectado, IP obtido.");
+        xEventGroupSetBits(s_wifi_test_event_group, WIFI_TEST_CONNECTED_BIT);
+    }
+}
+
+static esp_netif_t *wifi_test_init(void)
+{
+    // Padrão usual do IDF: se a partição NVS estiver nova/com layout antigo
+    // (comum na primeira gravação de Wi-Fi neste ESP32, já que o firmware
+    // de produção com W5500 nunca usa NVS), apaga e reinicializa.
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+
+    s_wifi_test_event_group = xEventGroupCreate();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                &wifi_test_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                &wifi_test_event_handler, NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = CONFIG_TEST_WIFI_SSID,
+            .password = CONFIG_TEST_WIFI_PASSWORD,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGW(TAG, "*** MODO DE TESTE: 1 interface Wi-Fi simulando ETH1+ETH2 (sem W5500) ***");
+    ESP_LOGI(TAG, "[teste] Conectando ao Wi-Fi '%s'...", CONFIG_TEST_WIFI_SSID);
+    xEventGroupWaitBits(s_wifi_test_event_group, WIFI_TEST_CONNECTED_BIT,
+                         pdFALSE, pdTRUE, portMAX_DELAY);
+
+    return sta_netif;
+}
+#endif // CONFIG_NETIF_BACKEND_WIFI
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    esp_netif_t *eth_netif_1;
+    esp_netif_t *eth_netif_2;
+
+#if CONFIG_NETIF_BACKEND_WIFI
+    esp_netif_t *test_netif = wifi_test_init();
+    eth_netif_1 = test_netif;
+    eth_netif_2 = test_netif;
+#else
     // --- W5500 #1: usado para MQTT ---
+    // spi_host vem do Kconfig (CONFIG_ETH1_W5500_SPI_HOST: 1=SPI2_HOST/HSPI,
+    // 2=SPI3_HOST/VSPI) para permitir inverter as portas sem recompilar o
+    // mapeamento fixo no código.
     eth_w5500_config_param_t eth1_cfg = {
-        .spi_host        = SPI2_HOST,
+        .spi_host        = (spi_host_device_t)CONFIG_ETH1_W5500_SPI_HOST,
         .miso_gpio       = CONFIG_ETH1_W5500_SPI_MISO,
         .mosi_gpio       = CONFIG_ETH1_W5500_SPI_MOSI,
         .sclk_gpio       = CONFIG_ETH1_W5500_SPI_SCLK,
@@ -160,7 +249,7 @@ void app_main(void)
 
     // --- W5500 #2: usado para o servidor TCP ---
     eth_w5500_config_param_t eth2_cfg = {
-        .spi_host        = SPI3_HOST,
+        .spi_host        = (spi_host_device_t)CONFIG_ETH2_W5500_SPI_HOST,
         .miso_gpio       = CONFIG_ETH2_W5500_SPI_MISO,
         .mosi_gpio       = CONFIG_ETH2_W5500_SPI_MOSI,
         .sclk_gpio       = CONFIG_ETH2_W5500_SPI_SCLK,
@@ -178,11 +267,23 @@ void app_main(void)
         .mac_addr_offset = 1, // diferente de eth1_cfg -> MAC distinto
     };
 
+    // Cada instância chama spi_bus_initialize() para o seu spi_host; se
+    // ETH1 e ETH2 apontarem pro mesmo host (erro de menuconfig), a segunda
+    // chamada falha. Checar aqui dá um erro claro em vez de um
+    // ESP_ERROR_CHECK genérico lá dentro do driver.
+    if (eth1_cfg.spi_host == eth2_cfg.spi_host) {
+        ESP_LOGE(TAG, "ETH1 e ETH2 configurados no mesmo SPI host (%d); "
+                       "ajuste CONFIG_ETH1_W5500_SPI_HOST / CONFIG_ETH2_W5500_SPI_HOST "
+                       "no menuconfig para hosts diferentes.", (int)eth1_cfg.spi_host);
+        return;
+    }
+
     ESP_LOGI(TAG, "Initializing W5500 #1 (MQTT)...");
-    esp_netif_t *eth_netif_1 = eth_w5500_init(&eth1_cfg);
+    eth_netif_1 = eth_w5500_init(&eth1_cfg);
 
     ESP_LOGI(TAG, "Initializing W5500 #2 (TCP Server)...");
-    esp_netif_t *eth_netif_2 = eth_w5500_init(&eth2_cfg);
+    eth_netif_2 = eth_w5500_init(&eth2_cfg);
+#endif // CONFIG_NETIF_BACKEND_WIFI
 
     if (eth_netif_1 == NULL || eth_netif_2 == NULL) {
         ESP_LOGE(TAG, "Falha ao inicializar uma das interfaces Ethernet, abortando.");
