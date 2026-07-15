@@ -16,3 +16,9 @@ topic write device/tcp_server/client_connected
 # adicione explicitamente (o Mosquitto nega por padrão tudo que não está
 # listado aqui, quando um acl_file está configurado):
 # topic read device/tcp_server/cmd
+
+# --- Exemplo de um segundo cliente mTLS (ex: uma app rodando no mesmo PC
+# do broker, com certificado gerado via scripts/generate_client_cert.sh
+# CLIENT_CN=pc-app-01) -- ela só LÊ o que o ESP32 publica, não publica nada:
+# user pc-app-01
+# topic read device/tcp_server/client_connected

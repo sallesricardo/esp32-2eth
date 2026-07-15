@@ -9,14 +9,49 @@ components/
   tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
   proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
 main/
-  app_main.c           # só orquestra: chama os 5 componentes acima e faz o proxy TCP
-  Kconfig.projbuild    # opção de menuconfig pra fixar o proxy numa interface (ver seção abaixo)
+  app_main.c           # orquestra: chama os 5 componentes acima e faz o proxy TCP
+                        #   (ou o backend Wi-Fi de teste, ver seção abaixo)
+  Kconfig.projbuild    # backend de rede (W5500 x Wi-Fi de teste), GPIOs dos
+                        #   W5500, broker MQTT, porta TCP, bind do proxy
 scripts/
   generate_certs.sh    # gera CA própria + certs do broker e do ESP32
 mosquitto/
   mosquitto.conf.example  # config de exemplo do broker (mTLS)
   acl.example              # ACL de exemplo restringindo tópicos do device
 ```
+
+## Backend de rede: W5500 (produção) x Wi-Fi (teste de bancada)
+
+O firmware roda de fábrica com os dois W5500 (ESP32-S3), mas dá pra testar
+a lógica de aplicação numa ESP32 qualquer sem os módulos W5500 disponíveis,
+via `idf.py menuconfig` → "Configuração Dual Ethernet W5500" → "Backend de
+rede":
+
+- **Dual W5500 (produção)** — default. Comportamento original: dois netifs
+  W5500 (`eth_netif_1`/`eth_netif_2`), um pro MQTT e outro pro proxy TCP,
+  cada um com seu IP estático (`CONFIG_ETH1_*`/`CONFIG_ETH2_*`).
+- **Wi-Fi STA (teste de bancada sem W5500)** — sobe **uma** interface Wi-Fi
+  (`CONFIG_TEST_WIFI_SSID`/`CONFIG_TEST_WIFI_PASSWORD`, opções que só
+  aparecem com esse backend selecionado) e a usa tanto como `eth_netif_1`
+  quanto `eth_netif_2`. Como é a mesma interface nos dois papéis, isso
+  **não** valida a separação real de tráfego entre duas NICs físicas — mas
+  exercita 100% do resto: conexão MQTT com mTLS, `tcp_server_app`,
+  `tcp_client_app`, o proxy via `proxy_events`, etc.
+
+Nenhum código dos componentes (`mqtt_app`, `tcp_server_app`,
+`tcp_client_app`, `proxy_events`) muda entre os dois backends — só
+`main/app_main.c` decide, em tempo de compilação
+(`#if CONFIG_NETIF_BACKEND_WIFI`), qual interface inicializar. Trocar de
+volta pra produção é só escolher "Dual W5500" de novo no menuconfig; os
+valores de `CONFIG_ETH1_*`/`CONFIG_ETH2_*` continuam salvos no `sdkconfig`.
+
+`esp_wifi`/`nvs_flash` estão sempre no `REQUIRES` de `main/CMakeLists.txt`
+(o ESP-IDF não permite condicionar `REQUIRES` a valores `CONFIG_*` — a
+expansão de dependências roda antes do sdkconfig ser carregado). No
+firmware de produção (backend W5500) esse código nunca é chamado — fica
+atrás de `#if CONFIG_NETIF_BACKEND_WIFI` em `app_main.c` — e o linker
+(`--gc-sections`, padrão no IDF) descarta os objetos não referenciados do
+binário final.
 
 ## Proxy TCP (tcp_server_app <-> tcp_client_app) via event loop dedicado
 
@@ -64,14 +99,19 @@ esperado.
 `main/app_main.c` e o `range` da opção `TCP_PROXY_BIND_ETH_IDX` em
 `main/Kconfig.projbuild` (hoje `-1 1`, viraria `-1 2`).
 
-**Nota sobre `main/Kconfig.projbuild`**: este projeto já referenciava
-`CONFIG_ETH1_*`, `CONFIG_ETH2_*`, `CONFIG_MQTT_BROKER_URI` e
-`CONFIG_TCP_SERVER_PORT`, que presumo já existirem no seu
-`Kconfig.projbuild` real (não incluído neste zip, já que não fazia parte
-do código-fonte original enviado). O arquivo `main/Kconfig.projbuild`
-incluído aqui só tem a nova opção `TCP_PROXY_BIND_ETH_IDX` — **mescle
-com o seu arquivo existente** em vez de substituí-lo, ou o build vai
-reclamar de opções indefinidas (`CONFIG_ETH1_STATIC_IP_ADDR` etc.).
+**`main/Kconfig.projbuild`**: já vem completo neste repo, com o `choice`
+de backend de rede, todas as opções `CONFIG_ETH1_*`/`CONFIG_ETH2_*` (GPIOs
+e IP estático de cada W5500), `CONFIG_MQTT_BROKER_URI`,
+`CONFIG_TCP_SERVER_PORT` e `CONFIG_TCP_PROXY_BIND_ETH_IDX`. Não precisa
+mesclar com nada.
+
+**SPI host configurável**: `CONFIG_ETH1_W5500_SPI_HOST`/
+`CONFIG_ETH2_W5500_SPI_HOST` (1=SPI2_HOST/HSPI, 2=SPI3_HOST/VSPI) são lidos
+direto em `main/app_main.c` — se precisar inverter as portas físicas dos
+dois W5500, é só mudar no menuconfig, sem recompilar o mapeamento. Se por
+engano os dois ficarem no mesmo host, `app_main` detecta e loga um erro
+claro antes de chamar `eth_w5500_init` (em vez de um `ESP_ERROR_CHECK`
+genérico no meio do driver).
 
 O processamento dos dados roda num **event loop dedicado** (`proxy_events`),
 separado do loop default usado por `ETH_EVENT`/`IP_EVENT`. Isso significa
@@ -153,6 +193,19 @@ forjado sem a chave privada correspondente).
    Isso cria uma CA própria e assina um certificado pro broker (com o IP
    dele no SAN) e um pro ESP32, tudo em `out/certs/`.
 
+   Se o broker for acessível por mais de um IP (ex: PC com mais de uma
+   interface de rede, ou você ainda não decidiu qual IP vai usar em
+   produção), use `BROKER_IPS` (separado por vírgula) em vez de
+   `BROKER_IP` — o certificado do broker sai com todos no SAN:
+   ```
+   BROKER_IPS="192.168.1.100,192.168.2.1" CLIENT_CN=esp32-device-01 ./scripts/generate_certs.sh
+   ```
+   Todo IP que algum dia for usado em `CONFIG_MQTT_BROKER_URI` precisa
+   estar nessa lista — o mbedTLS (no ESP32) valida o IP da URI contra o
+   SAN do certificado do broker, e derruba a conexão TLS se não achar uma
+   correspondência (não adianta só colocar o IP no `CN`; SAN é o que
+   importa nas stacks TLS modernas).
+
 2. **Copiar pro firmware**: substitua os placeholders em
    `components/mqtt_app/certs/` pelos arquivos gerados:
    ```
@@ -179,14 +232,38 @@ forjado sem a chave privada correspondente).
 5. **Ajustar `CONFIG_MQTT_BROKER_URI`**: no menuconfig, mude pra
    `mqtts://<ip-do-pc>:8883` (esquema `mqtts://`, porta TLS do Mosquitto).
 
+6. **Adicionar outros clientes mTLS depois** (ex: uma app rodando no mesmo
+   PC do broker, outro ESP32, uma ferramenta de debug): **não rode
+   `generate_certs.sh` de novo pra isso** — ele recria a CA do zero e
+   invalida o `ca.crt` já embutido no firmware e os certificados já
+   emitidos. Use `scripts/generate_client_cert.sh`, que reaproveita a CA
+   existente:
+   ```
+   CLIENT_CN=pc-app-01 ./scripts/generate_client_cert.sh
+   ```
+   Isso gera só `pc-app-01.crt`/`pc-app-01.key` (assinados pela mesma CA),
+   sem mexer no `broker.crt` nem no `ca.crt`. Depois é só:
+   - copiar `ca.crt` + `pc-app-01.crt` + `pc-app-01.key` pra onde a app vai
+     ler os certificados;
+   - adicionar `user pc-app-01` + os tópicos dela em `mosquitto/acl.conf`
+     (tem um exemplo comentado em `mosquitto/acl.example`);
+   - `systemctl restart mosquitto` (ele não recarrega ACL/certs sozinho).
+
+   Se essa nova app for conectar via `127.0.0.1` (ou outro IP), o
+   certificado **do broker** também precisa desse IP no SAN — reveja o
+   passo 1 (`BROKER_IPS`/`BROKER_DNS_NAMES`). Rodar `generate_certs.sh` de
+   novo só pra atualizar o SAN do broker é seguro: ele detecta que a CA já
+   existe e reaproveita (não regenera), só reemite o `broker.crt`.
+
 ### O que NÃO está automatizado aqui
 
-- **Provisionamento por device**: hoje um único `client.crt`/`client.key`
-  é embutido no binário — se você tiver mais de um ESP32 no futuro, todos
-  compilariam com a mesma identidade. Pra uma frota, o próximo passo seria
-  gerar um certificado por device (`CLIENT_CN` diferente por unidade) e
-  gravar via NVS/provisionamento individual em vez de embutir no `.bin`
-  compilado uma vez pra todos.
+- **Provisionamento por device em escala**: `scripts/generate_client_cert.sh`
+  já cobre emitir um certificado a mais (outra app, outro device) sem
+  invalidar a CA. O que ainda não existe é automação pra frota — se você
+  tiver muitos ESP32, hoje cada um precisaria de um `CLIENT_CN` próprio
+  gerado manualmente e embutido no `.bin` compilado individualmente; o
+  próximo passo seria gravar o cert/key via NVS/provisionamento por device
+  em vez de embutir no binário.
 - **Rotação de certificado**: os certificados gerados têm validade de 10
   anos (`DAYS_VALID` no script) — adequado pra um par fixo sem
   infraestrutura de renovação automática, mas se o certificado do ESP32
@@ -242,19 +319,20 @@ cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_
 3. **Race condition no MQTT**: o `esp_netif_set_default_netif()` de volta ao
    valor anterior só acontece no evento `MQTT_EVENT_CONNECTED`, não logo
    após `esp_mqtt_client_start()` (que é assíncrono).
-4. **Clock SPI**: subido de 1 MHz para 20 MHz no `main` (ajuste conforme seu
-   layout de trilhas — comentário deixado no código).
+4. **Clock SPI**: subido de 1 MHz para 40 MHz no `main` (ajuste conforme seu
+   layout de trilhas — comentário deixado no código; em fiação longa/jumper
+   considere baixar pra ~20 MHz se notar erros de comunicação com o W5500).
 5. Pequenos ajustes: `IPPROTO_TCP` explícito, checagem de retorno de
    `esp_netif_new`/`esp_eth_new_netif_glue`, `app_main` para se `eth_w5500_init`
    falhar em vez de seguir com netif NULL.
 
 ## O que falta pra você preencher
 
-- O `Kconfig.projbuild` com `CONFIG_ETH1_*`, `CONFIG_ETH2_*`,
-  `CONFIG_MQTT_BROKER_URI` e `CONFIG_TCP_SERVER_PORT` — presumo que já
-  existe no seu projeto original e não foi alterado aqui.
 - `idf_component.yml` de cada componente, se você for publicá-los
   separadamente; para uso interno ao projeto não é necessário.
+- Substituir os placeholders em `components/mqtt_app/certs/` pelos
+  certificados reais (ver seção "Segurança do MQTT" acima) antes de gravar
+  em produção.
 
 ## Se quiser evoluir depois
 
@@ -263,3 +341,6 @@ cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_
 - `mqtt_app`: hoje só loga eventos de conexão/erro; dá pra expor um
   callback de mensagem recebida (`esp_mqtt_client_register_event` já
   aceita mais de um handler).
+- Backend de teste Wi-Fi: hoje só existe modo STA fixo (SSID/senha via
+  Kconfig). Se for usar bastante, dá pra evoluir pra provisionamento via
+  `wifi_provisioning` em vez de hardcodar credenciais no `sdkconfig`.
