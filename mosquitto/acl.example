@@ -12,11 +12,11 @@ user esp32-device-01
 
 topic write device/tcp_server/client_connected
 topic write device/tcp_client/data_hex
+topic read  device/config/set
 
-# Se no futuro o ESP32 também assinar algum tópico de comando/config,
+# Se no futuro o ESP32 também assinar algum outro tópico de comando,
 # adicione explicitamente (o Mosquitto nega por padrão tudo que não está
-# listado aqui, quando um acl_file está configurado):
-# topic read device/tcp_server/cmd
+# listado aqui, quando um acl_file está configurado).
 
 # --- Exemplo de um segundo cliente mTLS (ex: uma app rodando no mesmo PC
 # do broker, com certificado gerado via scripts/generate_client_cert.sh

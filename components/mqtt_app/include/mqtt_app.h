@@ -1,11 +1,40 @@
 #pragma once
 
+#include <stddef.h>
 #include "esp_netif.h"
 #include "mqtt_client.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Callback chamado quando uma mensagem chega num tópico assinado
+ *        (ver `subscriptions` em mqtt_app_config_t).
+ *
+ * Roda na task interna do esp-mqtt (a mesma que despacha MQTT_EVENT_*) —
+ * não é a task de nenhum dos outros componentes. Se o processamento for
+ * pesado, copie os dados e delegue pra outra task/fila (o mesmo motivo
+ * pelo qual o proxy TCP usa um event loop dedicado — ver proxy_events.h).
+ *
+ * `topic`/`data` são reagrupados internamente pelo mqtt_app a partir dos
+ * fragmentos MQTT_EVENT_DATA (o esp-mqtt fragmenta mensagens maiores que o
+ * buffer interno do client) — chegam completos aqui, mas SEM terminador
+ * nulo garantido; use topic_len/data_len, não strlen().
+ */
+typedef void (*mqtt_app_data_cb_t)(const char *topic, size_t topic_len,
+                                    const char *data, size_t data_len);
+
+/**
+ * @brief Um tópico a assinar automaticamente sempre que o cliente
+ *        (re)conectar ao broker (reconexão não preserva subscriptions a
+ *        menos que o broker use sessão persistente, então o mqtt_app
+ *        reassina em todo MQTT_EVENT_CONNECTED).
+ */
+typedef struct {
+    const char *topic;
+    int qos;
+} mqtt_app_subscription_t;
 
 /**
  * @brief Configuração do cliente MQTT, incluindo mTLS.
@@ -28,6 +57,17 @@ typedef struct {
     // autenticação por certificado do lado do device).
     const char *client_cert_pem;
     const char *client_key_pem;
+
+    // Tópicos a assinar automaticamente (pode ser NULL/0 se o device só
+    // publica e nunca recebe nada). O array não é copiado -- precisa
+    // permanecer válido pela vida do programa (o normal ao usar arrays
+    // estáticos/globais em main/app_main.c).
+    const mqtt_app_subscription_t *subscriptions;
+    size_t subscriptions_count;
+
+    // Chamado a cada mensagem recebida em qualquer tópico assinado. Pode
+    // ser NULL se subscriptions_count == 0.
+    mqtt_app_data_cb_t on_data;
 } mqtt_app_config_t;
 
 /**

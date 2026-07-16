@@ -1,4 +1,5 @@
 #include "sdkconfig.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "esp_event.h"
@@ -11,12 +12,13 @@
 #include "tcp_server_app.h"
 #include "tcp_client_app.h"
 #include "proxy_events.h"
+#include "device_config.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include "nvs_flash.h"
 
 #if CONFIG_NETIF_BACKEND_WIFI
 #include "esp_wifi.h"
-#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #endif
@@ -32,8 +34,9 @@ extern const uint8_t mqtt_client_cert_pem_start[] asm("_binary_client_crt_start"
 extern const uint8_t mqtt_client_key_pem_start[]  asm("_binary_client_key_start");
 
 #define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
-#define MQTT_TCP_NOTIFY_TOPIC     "device/tcp_server/client_connected"
+#define MQTT_TCP_NOTIFY_TOPIC      "device/tcp_server/client_connected"
 #define MQTT_TCP_CLIENT_DATA_TOPIC "device/tcp_client/data_hex"
+#define MQTT_CONFIG_TOPIC          "device/config/set"
 
 #define REMOTE_HOST_IP   CONFIG_REMOTE_HOST_IP
 #define REMOTE_HOST_PORT CONFIG_REMOTE_HOST_PORT
@@ -61,6 +64,41 @@ static void on_tcp_client_connected(const char *client_ip)
 
     mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, /*qos=*/1, /*retain=*/0);
     cJSON_free(payload); // cJSON_PrintUnformatted aloca via cJSON_malloc; libera com cJSON_free
+}
+
+// Chamado pelo mqtt_app (via mqtt_app_data_cb_t) toda vez que chega uma
+// mensagem em MQTT_CONFIG_TOPIC -- inclusive mensagens retidas entregues
+// logo após a subscription, e reenvios do publicador. device_config só
+// grava no NVS se o conteúdo mudou (hash), então repetição não desgasta
+// flash à toa.
+//
+// Roda na task interna do esp-mqtt (ver doc de mqtt_app_data_cb_t) -- por
+// enquanto só grava bruto no NVS, então é rápido o bastante pra rodar
+// direto aqui. Se o parse/aplicação da config (schema ainda não definido)
+// virar algo mais pesado, considere copiar `data` e delegar pro event loop
+// do proxy_events (mesmo padrão usado pelos dados do proxy TCP) em vez de
+// processar direto aqui dentro.
+static void on_mqtt_config_data(const char *topic, size_t topic_len, const char *data, size_t data_len)
+{
+    (void)topic;
+    (void)topic_len;
+
+    bool changed = false;
+    esp_err_t err = device_config_apply_if_changed(data, data_len, &changed);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "device_config_apply_if_changed falhou: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (!changed) {
+        ESP_LOGI(TAG, "Config MQTT recebida (%d bytes) e igual a atual, nada aplicado", (int)data_len);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Config MQTT nova salva no NVS (%d bytes)", (int)data_len);
+    // TODO: assim que o schema das configs estiver definido, faça o parse
+    // (ex: cJSON_ParseWithLength(data, data_len)) e aplique os valores nos
+    // componentes relevantes aqui. Hoje device_config só guarda o bruto.
 }
 
 // --- Funções de processamento dos dados do proxy (só logging por enquanto) ---
@@ -218,16 +256,6 @@ static void wifi_test_event_handler(void *arg, esp_event_base_t base,
 
 static esp_netif_t *wifi_test_init(void)
 {
-    // Padrão usual do IDF: se a partição NVS estiver nova/com layout antigo
-    // (comum na primeira gravação de Wi-Fi neste ESP32, já que o firmware
-    // de produção com W5500 nunca usa NVS), apaga e reinicializa.
-    esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        nvs_err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(nvs_err);
-
     s_wifi_test_event_group = xEventGroupCreate();
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
 
@@ -260,6 +288,19 @@ static esp_netif_t *wifi_test_init(void)
 
 void app_main(void)
 {
+    // Padrão usual do IDF: se a partição NVS estiver nova/com layout
+    // antigo, apaga e reinicializa. Precisa rodar ANTES de
+    // device_config_init() (que abre um namespace NVS) e, no backend de
+    // teste, antes de esp_wifi_init() (que também usa NVS pra guardar
+    // calibração de rádio).
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+    ESP_ERROR_CHECK(device_config_init());
+
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -338,11 +379,33 @@ void app_main(void)
         return;
     }
 
+    // Aplica (por enquanto, só loga) o último config recebido antes do
+    // reboot -- assim o device não fica "sem config" enquanto espera o
+    // MQTT reconectar e o broker reenviar (se for retained) ou você
+    // republicar manualmente.
+    {
+        static char boot_cfg_buf[DEVICE_CONFIG_MAX_LEN];
+        size_t boot_cfg_len = 0;
+        esp_err_t err = device_config_load_raw(boot_cfg_buf, sizeof(boot_cfg_buf), &boot_cfg_len);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Config salva encontrada no NVS (%d bytes) -- TODO: aplicar quando o schema existir",
+                     (int)boot_cfg_len);
+        }
+        // ESP_ERR_NVS_NOT_FOUND (primeiro boot) é esperado e já foi logado
+        // dentro de device_config_load_raw; outros erros também.
+    }
+
+    static const mqtt_app_subscription_t mqtt_subscriptions[] = {
+        { .topic = MQTT_CONFIG_TOPIC, .qos = 1 },
+    };
     mqtt_app_config_t mqtt_cfg = {
         .eth_netif = eth_netif_1,
         .ca_cert_pem = (const char *)mqtt_ca_cert_pem_start,
         .client_cert_pem = (const char *)mqtt_client_cert_pem_start,
         .client_key_pem = (const char *)mqtt_client_key_pem_start,
+        .subscriptions = mqtt_subscriptions,
+        .subscriptions_count = sizeof(mqtt_subscriptions) / sizeof(mqtt_subscriptions[0]),
+        .on_data = on_mqtt_config_data,
     };
     mqtt_app_start(&mqtt_cfg);
 

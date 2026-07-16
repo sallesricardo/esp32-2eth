@@ -8,13 +8,15 @@ components/
   tcp_server_app/      # servidor TCP simples (1 conexão por vez)
   tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
   proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
+  device_config/       # config recebida via MQTT, salva no NVS com hash-gate (CRC32)
 main/
-  app_main.c           # orquestra: chama os 5 componentes acima e faz o proxy TCP
+  app_main.c           # orquestra: chama os componentes acima e faz o proxy TCP
                         #   (ou o backend Wi-Fi de teste, ver seção abaixo)
   Kconfig.projbuild    # backend de rede (W5500 x Wi-Fi de teste), GPIOs dos
                         #   W5500, broker MQTT, porta TCP, bind do proxy
 scripts/
-  generate_certs.sh    # gera CA própria + certs do broker e do ESP32
+  generate_certs.sh        # gera/reaproveita a CA própria + certs do broker e do ESP32
+  generate_client_cert.sh  # emite um certificado de cliente A MAIS, reaproveitando a CA
 mosquitto/
   mosquitto.conf.example  # config de exemplo do broker (mTLS)
   acl.example              # ACL de exemplo restringindo tópicos do device
@@ -310,6 +312,67 @@ com outro tópico/campo `event`.
 minúsculos (`bytes_to_hex` em `main/app_main.c`), então o payload MQTT
 fica ~2x o tamanho do dado bruto — aceitável pro volume desse proxy, mas
 vale lembrar se o tráfego TCP crescer bastante.
+
+## Config recebida via MQTT, salva no NVS (device_config)
+
+O firmware assina `device/config/set` (ver `MQTT_CONFIG_TOPIC` em
+`main/app_main.c`) e, a cada mensagem recebida, delega pro componente
+**`device_config`** (`components/device_config/`) — genérico, não sabe
+nada de MQTT, só entende "bytes crus + hash + NVS".
+
+**Fluxo hoje:**
+
+1. `mqtt_app` assina `device/config/set` automaticamente (a cada conexão
+   e reconexão — ver "Subscriptions" abaixo) e reagrupa a mensagem
+   completa antes de repassar (mensagens MQTT maiores que o buffer
+   interno do client chegam fragmentadas em vários `MQTT_EVENT_DATA`;
+   `mqtt_app.c` já cuida disso).
+2. `on_mqtt_config_data` (`main/app_main.c`) recebe o payload bruto e
+   chama `device_config_apply_if_changed()`.
+3. `device_config` calcula um **CRC32** do payload novo e compara com o
+   hash do último config salvo no NVS:
+   - **Igual** → não escreve nada na flash, só loga. Isso importa porque
+     é comum o mesmo config chegar de novo sem ter mudado — mensagem
+     retida (`retain=1`) sendo entregue a cada reconexão MQTT, ou o
+     publicador simplesmente republicando o mesmo valor. Sem esse
+     hash-gate, cada uma dessas entregas viraria uma escrita na flash à
+     toa (a NVS tem wear-leveling, mas não é motivo pra desperdiçar
+     ciclos de escrita de propósito).
+   - **Diferente** → salva o payload bruto + o hash novo no NVS
+     (namespace `dev_cfg`, chaves `cfg_raw`/`cfg_hash`).
+4. No próximo boot, `device_config_load_raw()` recupera o último config
+   salvo — o device não fica "sem config" só porque ainda não reconectou
+   no MQTT depois de um reboot.
+
+**O que falta (de propósito — você ainda não definiu o schema):** hoje
+`device_config` só guarda o payload bruto; ele não sabe interpretar
+campos específicos. Quando o schema estiver definido, o parse/aplicação
+entra no `TODO` já deixado dentro de `on_mqtt_config_data`
+(`main/app_main.c`) — provavelmente `cJSON_ParseWithLength()` no payload
+reagrupado, seguindo o mesmo padrão de uso de cJSON já estabelecido nesse
+projeto (ver seção "Payload MQTT" acima).
+
+**Por que CRC32 e não um hash criptográfico (SHA-256 etc.)**: aqui o hash
+só serve pra detectar *mudança de conteúdo*, não pra garantir
+integridade/autenticidade — isso já é responsabilidade do canal mTLS (a
+mensagem só chega até aqui se a conexão MQTT foi autenticada nos dois
+sentidos). Um hash criptográfico custaria mais CPU sem ganhar nada nesse
+caso de uso. Se um dia esse fluxo aceitar config de uma fonte não
+autenticada, essa decisão precisa ser revisitada.
+
+**Subscriptions no mqtt_app**: o `mqtt_app` ganhou suporte a assinar
+tópicos automaticamente (`mqtt_app_config_t.subscriptions`) e a um
+callback de dados recebidos (`on_data`) — reassina em toda
+`MQTT_EVENT_CONNECTED` porque reconexão não preserva subscriptions a
+menos que o broker use sessão persistente. Adicionar um tópico novo (além
+de `device/config/set`) é só estender o array `mqtt_subscriptions` em
+`main/app_main.c`.
+
+**Lembrete de ACL**: `esp32-device-01` precisa de `topic read
+device/config/set` no `acl.conf` do Mosquitto pra conseguir assinar esse
+tópico — já está em `mosquitto/acl.example`, mas se você já tem um
+`acl.conf` em produção, precisa adicionar a linha lá também e reiniciar o
+Mosquitto.
 
 ## Por que essa divisão
 
