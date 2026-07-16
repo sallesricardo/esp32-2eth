@@ -11,6 +11,7 @@
 user esp32-device-01
 
 topic write device/tcp_server/client_connected
+topic write device/tcp_client/data_hex
 
 # Se no futuro o ESP32 também assinar algum tópico de comando/config,
 # adicione explicitamente (o Mosquitto nega por padrão tudo que não está
@@ -22,3 +23,4 @@ topic write device/tcp_server/client_connected
 # CLIENT_CN=pc-app-01) -- ela só LÊ o que o ESP32 publica, não publica nada:
 # user pc-app-01
 # topic read device/tcp_server/client_connected
+# topic read device/tcp_client/data_hex

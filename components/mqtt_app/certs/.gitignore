@@ -6,6 +6,6 @@
 # adote outra estratégia (ex: injetar via variável de ambiente/CI, ou
 # provisionamento via NVS por device em vez de embutir no binário).
 #
-# ca.crt
-# client.crt
-# client.key
+ca.crt
+client.crt
+client.key

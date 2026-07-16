@@ -32,7 +32,8 @@ extern const uint8_t mqtt_client_cert_pem_start[] asm("_binary_client_crt_start"
 extern const uint8_t mqtt_client_key_pem_start[]  asm("_binary_client_key_start");
 
 #define TCP_WELCOME_MSG      "Conectado ao servidor TCP\n"
-#define MQTT_TCP_NOTIFY_TOPIC "device/tcp_server/client_connected"
+#define MQTT_TCP_NOTIFY_TOPIC     "device/tcp_server/client_connected"
+#define MQTT_TCP_CLIENT_DATA_TOPIC "device/tcp_client/data_hex"
 
 #define REMOTE_HOST_IP   CONFIG_REMOTE_HOST_IP
 #define REMOTE_HOST_PORT CONFIG_REMOTE_HOST_PORT
@@ -68,6 +69,27 @@ static void on_tcp_client_connected(const char *client_ip)
 // de rede que recebeu o dado — então podem ficar mais pesadas no futuro
 // sem travar a recepção do socket.
 
+// Converte `len` bytes de `data` numa string hexadecimal minúscula (2
+// chars por byte + '\0'). Retorna buffer alocado no heap — quem chama é
+// dono e deve dar free(). Retorna NULL em falha de alocação ou len == 0.
+static char *bytes_to_hex(const uint8_t *data, size_t len)
+{
+    static const char hex_digits[] = "0123456789abcdef";
+    if (len == 0) {
+        return NULL;
+    }
+    char *out = malloc(len * 2 + 1);
+    if (out == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2]     = hex_digits[(data[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hex_digits[data[i] & 0x0F];
+    }
+    out[len * 2] = '\0';
+    return out;
+}
+
 // Dados vindos do cliente TCP local (conectado no tcp_server_app), a
 // caminho do host remoto.
 static void process_data_from_tcp_client(const uint8_t *data, size_t len, int64_t latency_us)
@@ -79,13 +101,39 @@ static void process_data_from_tcp_client(const uint8_t *data, size_t len, int64_
 }
 
 // Dados vindos do host remoto (via tcp_client_app), a caminho do cliente
-// TCP local.
+// TCP local. Publica o conteúdo em hex num tópico MQTT, além de encaminhar
+// pro cliente TCP local (feito pelo handler do evento, logo abaixo).
 static void process_data_from_remote_host(const uint8_t *data, size_t len, int64_t latency_us)
 {
-    (void)data;
     ESP_LOGI(TAG, "process_data_from_remote_host: %d bytes, latencia recv->processamento: %lld us",
              (int)len, (long long)latency_us);
-    // TODO: implementar processamento
+
+    char *hex = bytes_to_hex(data, len);
+    if (hex == NULL) {
+        ESP_LOGE(TAG, "bytes_to_hex falhou (sem memoria ou len=0), publicacao MQTT descartada");
+        return;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        ESP_LOGE(TAG, "cJSON_CreateObject falhou (sem memoria?), publicacao MQTT descartada");
+        free(hex);
+        return;
+    }
+    cJSON_AddStringToObject(root, "event", "tcp_client_data");
+    cJSON_AddStringToObject(root, "hex", hex); // cJSON copia a string internamente
+    cJSON_AddNumberToObject(root, "len", (double)len);
+    free(hex);
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload == NULL) {
+        ESP_LOGE(TAG, "cJSON_PrintUnformatted falhou, publicacao MQTT descartada");
+        return;
+    }
+
+    mqtt_app_publish(MQTT_TCP_CLIENT_DATA_TOPIC, payload, /*qos=*/1, /*retain=*/0);
+    cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_free
 }
 
 // Handler do PROXY_EVENT_DATA_FROM_TCP_CLIENT, chamado pelo event loop

@@ -226,8 +226,9 @@ forjado sem a chave privada correspondente).
 4. **Configurar o ACL**: copie `mosquitto/acl.example` pra
    `/etc/mosquitto/acl.conf` (caminho referenciado no passo 3). Ele
    restringe o device (`esp32-device-01`) a só publicar em
-   `device/tcp_server/client_connected` — mesmo que o certificado do
-   device seja comprometido, o estrago fica limitado a esse tópico.
+   `device/tcp_server/client_connected` e `device/tcp_client/data_hex` —
+   mesmo que o certificado do device seja comprometido, o estrago fica
+   limitado a esses dois tópicos.
 
 5. **Ajustar `CONFIG_MQTT_BROKER_URI`**: no menuconfig, mude pra
    `mqtts://<ip-do-pc>:8883` (esquema `mqtts://`, porta TLS do Mosquitto).
@@ -274,14 +275,13 @@ forjado sem a chave privada correspondente).
 
 ## Payload MQTT: cJSON em vez de snprintf
 
-`on_tcp_client_connected` (em `main/app_main.c`) monta o payload JSON com
-`cJSON` (componente `json`, já embutido no ESP-IDF — sem dependência
-externa) em vez de `snprintf` manual. Motivo: qualquer valor interpolado
-(como `client_ip`) recebe escaping automático, o que importa porque esse
-dado passa por rede não totalmente confiável no modelo de ameaça deste
-projeto. Também fica mais fácil adicionar campos novos (ex: quando
-`process_data_from_tcp_client`/`process_data_from_remote_host` passarem a
-publicar telemetria) sem recalcular tamanho de buffer manualmente.
+`on_tcp_client_connected` e `process_data_from_remote_host` (em
+`main/app_main.c`) montam o payload JSON com `cJSON` (componente `json`,
+já embutido no ESP-IDF — sem dependência externa) em vez de `snprintf`
+manual. Motivo: qualquer valor interpolado (como `client_ip`) recebe
+escaping automático, o que importa porque esse dado passa por rede não
+totalmente confiável no modelo de ameaça deste projeto. Também fica mais
+fácil adicionar campos novos sem recalcular tamanho de buffer manualmente.
 
 Padrão usado:
 ```c
@@ -293,6 +293,23 @@ cJSON_Delete(root);
 mqtt_app_publish(MQTT_TCP_NOTIFY_TOPIC, payload, 1, 0);
 cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_free, não free()
 ```
+
+**Tópicos publicados hoje:**
+
+| Tópico | Quando | Payload |
+|---|---|---|
+| `device/tcp_server/client_connected` | um cliente conecta no `tcp_server_app` (porta local) | `{"event":"tcp_client_connected","ip":"..."}` |
+| `device/tcp_client/data_hex` | o `tcp_client_app` recebe dado do host remoto | `{"event":"tcp_client_data","hex":"...","len":N}` |
+
+O dado recebido do lado do `tcp_server_app` (`process_data_from_tcp_client`)
+ainda só loga — não é publicado no MQTT. Se quiser o mesmo tratamento
+nesse sentido, é só espelhar o padrão de `process_data_from_remote_host`
+com outro tópico/campo `event`.
+
+**Sobre o campo `hex`**: cada byte recebido vira 2 caracteres hex
+minúsculos (`bytes_to_hex` em `main/app_main.c`), então o payload MQTT
+fica ~2x o tamanho do dado bruto — aceitável pro volume desse proxy, mas
+vale lembrar se o tráfego TCP crescer bastante.
 
 ## Por que essa divisão
 
