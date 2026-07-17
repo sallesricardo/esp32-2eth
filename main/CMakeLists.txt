@@ -16,6 +16,7 @@ idf_component_register(
         tcp_server_app
         tcp_client_app
         proxy_events
+        device_config
         esp_netif
         esp_event
         esp_timer
