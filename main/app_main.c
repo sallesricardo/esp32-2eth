@@ -13,6 +13,7 @@
 #include "tcp_client_app.h"
 #include "proxy_events.h"
 #include "doppler_events.h"
+#include "doppler_processing.h"
 #include "device_config.h"
 #include "esp_timer.h"
 #include "cJSON.h"
@@ -173,39 +174,6 @@ static void process_data_from_remote_host(const uint8_t *data, size_t len, int64
 
     mqtt_app_publish(MQTT_TCP_CLIENT_DATA_TOPIC, payload, /*qos=*/1, /*retain=*/0);
     cJSON_free(payload); // cJSON_Print* aloca via cJSON_malloc -> libera com cJSON_free
-}
-
-// Handler dos eventos do doppler_events, chamado pelo event loop dedicado
-// do doppler -- NÃO na task de I/O do tcp_client_app. Registrado com
-// ESP_EVENT_ANY_ID (ver app_main abaixo), então roda pra qualquer comando
-// do radar; `event_id` é o próprio comando (ver doppler_events_post_data).
-// Dono do evt->data: libera no final.
-//
-// TODO: assim que os comandos do radar estiverem mapeados, considere
-// registrar handlers específicos por comando em vez de um genérico só --
-// ex: doppler_events_register_handler(CMD_DETECCAO, handle_deteccao, NULL)
-// -- e mover o processamento de cada um pra sua própria função, como já é
-// feito com process_data_from_tcp_client / process_data_from_remote_host.
-static void handle_doppler_frame_event(void *handler_arg, esp_event_base_t base,
-                                        int32_t event_id, void *event_data)
-{
-    (void)handler_arg;
-    (void)base;
-    doppler_data_event_t *evt = (doppler_data_event_t *)event_data;
-
-    // Latência de ponta a ponta: evt->timestamp_us é o instante em que o
-    // PREÂMBULO do pacote chegou (capturado no parser do tcp_client_app),
-    // não o instante em que entrou nesta fila -- então isso mede o tempo
-    // total desde o primeiro byte do pacote até aqui.
-    int64_t latency_us = esp_timer_get_time() - evt->timestamp_us;
-
-    ESP_LOGI(TAG, "handle_doppler_frame_event: comando 0x%02X, %d bytes, "
-                  "latencia preambulo->processamento: %lld us",
-             (unsigned int)event_id, (int)evt->len, (long long)latency_us);
-    // TODO: implementar o processamento de verdade do payload do radar
-    // aqui (ou nos handlers específicos por comando, ver TODO acima).
-
-    free(evt->data);
 }
 
 // Handler do PROXY_EVENT_DATA_FROM_TCP_CLIENT, chamado pelo event loop
@@ -490,13 +458,11 @@ void app_main(void)
     ESP_ERROR_CHECK(proxy_events_register_handler(
         PROXY_EVENT_DATA_FROM_REMOTE_HOST, handle_data_from_remote_host_event, NULL));
     // Doppler: event loop dedicado, separado do loop default (ETH_EVENT/IP_EVENT).
-    // Registrado com ESP_EVENT_ANY_ID por enquanto -- doppler_events usa o
-    // comando do radar como event_id, então isso roda handle_doppler_frame_event
-    // pra qualquer comando (ver TODO no handler pra registrar por comando
-    // específico assim que eles estiverem mapeados).
+    // O roteamento por comando (event_id) e o processamento de cada um
+    // vivem em components/doppler_processing -- adicionar um comando novo
+    // não mexe aqui, só na tabela s_handlers de lá.
     ESP_ERROR_CHECK(doppler_events_init());
-    ESP_ERROR_CHECK(doppler_events_register_handler(
-        ESP_EVENT_ANY_ID, handle_doppler_frame_event, NULL));
+    ESP_ERROR_CHECK(doppler_processing_init());
 
 
     tcp_server_app_start(CONFIG_TCP_SERVER_PORT, proxy_bind_netif, TCP_WELCOME_MSG,

@@ -17,6 +17,7 @@ idf_component_register(
         tcp_client_app
         proxy_events
         doppler_events
+        doppler_processing
         device_config
         esp_netif
         esp_event
