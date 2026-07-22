@@ -6,14 +6,16 @@ components/
   mqtt_app/            # cliente MQTT com mTLS, amarrado a um netif específico
     certs/              # PLACEHOLDERS -- substitua pelos gerados em scripts/generate_certs.sh
   tcp_server_app/      # servidor TCP simples (1 conexão por vez)
-  tcp_client_app/      # cliente TCP que conecta a um host remoto, com reconexão automática
-  proxy_events/        # event loop dedicado pro processamento (desacoplado do I/O de rede)
+  tcp_client_app/      # cliente TCP framed pro host remoto/radar, com reconexão automática
+  proxy_events/        # event loop dedicado pro processamento do proxy (desacoplado do I/O de rede)
+  doppler_events/      # event loop dedicado pros frames do radar, indexado pelo comando
+  doppler_processing/  # roteamento por comando + processamento de cada um (ver seção Doppler abaixo)
   device_config/       # config recebida via MQTT, salva no NVS com hash-gate (CRC32)
 main/
   app_main.c           # orquestra: chama os componentes acima e faz o proxy TCP
                         #   (ou o backend Wi-Fi de teste, ver seção abaixo)
   Kconfig.projbuild    # backend de rede (W5500 x Wi-Fi de teste), GPIOs dos
-                        #   W5500, broker MQTT, porta TCP, bind do proxy
+                        #   W5500, broker MQTT, porta TCP, bind do proxy, host/porta remoto
 scripts/
   generate_certs.sh        # gera/reaproveita a CA própria + certs do broker e do ESP32
   generate_client_cert.sh  # emite um certificado de cliente A MAIS, reaproveitando a CA
@@ -174,6 +176,83 @@ em `components/proxy_events/proxy_events.c` conforme a rajada esperada.
   comportamento no sentido contrário.
 - O `tcp_client_app` resolve o host via `getaddrinfo`, então tanto IP
   quanto hostname (se você tiver DNS configurado) funcionam.
+
+## Doppler / Radar (tcp_client_app framing + doppler_events + doppler_processing)
+
+Além de fazer proxy de bytes crus (seção acima), o `tcp_client_app` também
+decodifica um protocolo framed vindo do mesmo host remoto (o radar/Doppler)
+e despacha cada pacote pro processamento certo, por comando.
+
+**Formato do frame** (constantes em `components/tcp_client_app/tcp_client_app.c`):
+
+```
+[header 0xDB][tamanho u16 BE][comando][nº do frame][payload...][checksum][footer 0xDC]
+```
+
+- `checksum` = soma (mod 256) dos bytes entre o tamanho (inclusive) e o
+  fim do payload.
+- Payload máximo hoje: `MAX_PAYLOAD_SIZE` = 1024 bytes.
+- Pacote com checksum ou footer errados é descartado (warning no log), sem
+  travar o parser — ele volta pra `STATE_WAIT_HEADER` e continua ouvindo.
+
+**Timestamp de latência tirado no preâmbulo, não no fim do pacote**: assim
+que o parser vê o byte de header (`0xDB`), ele já captura
+`esp_timer_get_time()` antes de processar o resto do frame. Esse valor
+(`timestamp_us`) é passado adiante — pro callback do `tcp_client_app`, pro
+`doppler_events_post_data`, até o handler final — sem ser recalculado no
+caminho. Isso é diferente do proxy (`proxy_events`), que carimba o tempo no
+momento da cópia (logo após o `recv()`, já com o pacote inteiro em mãos):
+no caminho do doppler, `latency_us = esp_timer_get_time() - timestamp_us`
+mede da chegada do **primeiro byte** do pacote até o fim do processamento —
+uma medição de ponta a ponta mais completa que a do proxy.
+
+**Roteamento por comando** — igual ao proxy, o processamento roda numa task
+dedicada (não na task de I/O do `tcp_client_app`), mas em vez de duas
+direções fixas (`PROXY_EVENT_DATA_FROM_TCP_CLIENT`/`_REMOTE_HOST`), o
+`doppler_events` usa o próprio **comando do pacote como `event_id`** do
+ESP-IDF:
+
+```
+[task tcp_client_app] --recv()--> parser (state machine)
+                                     -> ao completar um frame válido, chama
+                                        on_data_from_remote_host(command, frame_number,
+                                                                  payload, payload_len,
+                                                                  timestamp_us)
+                                          -> doppler_events_post_data(command, payload, payload_len, timestamp_us)
+                                               (copia pro heap, NÃO recalcula timestamp, enfileira)
+                                                       |
+                                                       v
+                                    [task doppler_evt_loop] -> doppler_frame_dispatcher()  (doppler_processing,
+                                                                registrado 1x com ESP_EVENT_ANY_ID)
+                                                                  -> procura `command` em s_handlers[]
+                                                                  -> chama o handler daquele comando (ou loga
+                                                                     warning se o comando não tiver handler)
+                                                                  -> free(data)
+```
+
+**Onde implementar o processamento de cada comando**: adicione uma entrada
+`{comando, nome, função}` em `s_handlers[]`, em
+`components/doppler_processing/doppler_processing.c`. Não precisa mexer em
+`app_main.c`, `doppler_events` nem `tcp_client_app` pra um comando novo —
+só nessa tabela. O handler recebe `(const uint8_t *payload, size_t len,
+int64_t latency_us)` e não deve dar `free()` no payload — quem libera é o
+dispatcher, depois que o handler retorna.
+
+**Hoje só existem dois comandos placeholder** (`DOPPLER_CMD_EXEMPLO_A` =
+`0x01`, `DOPPLER_CMD_EXEMPLO_B` = `0x02`), cada um só logando o que
+recebeu — os valores reais e a decodificação de cada payload ainda
+dependem do protocolo do radar ser documentado (ver "O que falta pra você
+preencher" mais abaixo).
+
+**Enviar comandos pro radar** (não só receber): `tcp_client_app_send_command
+(command, payload, payload_len)` monta o frame completo (header, tamanho,
+comando, número de frame incremental, checksum, footer) e envia — não
+precisa montar o framing manualmente fora do componente.
+
+**Reconexão**: mesmo comportamento do proxy — o `tcp_client_app` reconecta
+sozinho a cada 3s se a conexão cair (`RECONNECT_DELAY_MS`), independente de
+estar sendo usado só pro proxy, só pro doppler, ou pros dois ao mesmo tempo
+(hoje é a mesma conexão TCP alimentando ambos os caminhos).
 
 ## Segurança do MQTT: mTLS + ACL
 
@@ -405,6 +484,22 @@ Mosquitto.
 5. Pequenos ajustes: `IPPROTO_TCP` explícito, checagem de retorno de
    `esp_netif_new`/`esp_eth_new_netif_glue`, `app_main` para se `eth_w5500_init`
    falhar em vez de seguir com netif NULL.
+6. **MAC/IP não sobreviviam a um reset do W5500**: o chip guarda o MAC num
+   registrador volátil (SHAR) que se perde se o chip resetar (glitch de
+   energia, ruído no RST) — o que podia acontecer justamente ao religar o
+   cabo. `eth_w5500_init` agora guarda um contexto por instância (alocado
+   no heap, não no stack de quem chamou — importante porque `app_main()`
+   retorna e sua stack é liberada) e reaplica MAC + IP estático a cada
+   `ETHERNET_EVENT_CONNECTED`, não só uma vez no boot.
+7. **`tcp_client_app`/`doppler_events` desalinhados do resto**: o `.c` do
+   `tcp_client_app` não implementava a API do próprio `.h` (nem conectava
+   de fato o socket); `doppler_events.h` declarava uma base de evento
+   (`DOPPLER_EVENT`) diferente da que `doppler_events.c` definia
+   (`DOPPLER_EVENTS_EVENT`); e o `CMakeLists.txt` do `doppler_events`
+   apontava pra um arquivo (`process_doppler.c`) que não existia mais.
+   Reescrito pra bater com o `tcp_server_app` (conecta via `getaddrinfo`,
+   reconecta a cada 3s) e pra usar o comando do pacote como `event_id` do
+   `doppler_events` (ver seção "Doppler / Radar" acima).
 
 ## O que falta pra você preencher
 
@@ -413,6 +508,11 @@ Mosquitto.
 - Substituir os placeholders em `components/mqtt_app/certs/` pelos
   certificados reais (ver seção "Segurança do MQTT" acima) antes de gravar
   em produção.
+- Os comandos reais do protocolo do radar/Doppler: hoje `doppler_processing.c`
+  só tem dois comandos de exemplo (`DOPPLER_CMD_EXEMPLO_A`/`_B`), cada um só
+  logando o que recebeu. Substitua pelos comandos e pela decodificação de
+  payload de verdade assim que o protocolo estiver documentado (ver seção
+  "Doppler / Radar" acima).
 
 ## Se quiser evoluir depois
 
