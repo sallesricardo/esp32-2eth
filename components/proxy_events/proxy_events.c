@@ -46,6 +46,7 @@ esp_err_t proxy_events_register_handler(int32_t event_id,
     return esp_event_handler_register_with(s_loop, PROXY_EVENT, event_id, handler, handler_arg);
 }
 
+// TODO: Remover depois de testar
 void proxy_events_post_data(int32_t event_id, const uint8_t *data, size_t len)
 {
     if (s_loop == NULL) {

@@ -1,5 +1,8 @@
 #include "eth_w5500.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_event.h"
@@ -14,30 +17,56 @@
 
 static const char *TAG = "eth_w5500";
 
-// --- Event handlers (por instância, via arg = if_desc) ---
+// Contexto persistente de uma instância W5500, alocado no heap (não no
+// stack de quem chama eth_w5500_init) -- os event handlers ficam vivos
+// pelo resto da execução do programa e são chamados de forma assíncrona
+// bem depois de eth_w5500_init() retornar (inclusive depois de app_main()
+// retornar, já que a config passada pra eth_w5500_init é local a ela).
+// Guardar só se_desc (literal, sempre válido) seria suficiente pro log,
+// mas pra REAPLICAR mac/IP no reconnect também precisamos do resto.
+typedef struct {
+    char if_desc[16];
+    uint8_t mac_addr[6];
+    esp_netif_t *netif;
+    esp_netif_ip_info_t ip_info;
+} eth_w5500_ctx_t;
+
+// --- Event handlers (por instância, via arg = eth_w5500_ctx_t*) ---
 
 static void eth_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     (void)base;
-    const char *if_desc = (const char *)arg;
+    eth_w5500_ctx_t *ctx = (eth_w5500_ctx_t *)arg;
     esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
-    uint8_t mac_addr[6] = {0};
 
     switch (event_id) {
-    case ETHERNET_EVENT_CONNECTED:
+    case ETHERNET_EVENT_CONNECTED: {
+        // Reaplica MAC e IP estático desta instância a cada link up
+        // (inclui religar o cabo depois de um link down) -- ver doc de
+        // eth_w5500_init() no header sobre por que isso é necessário
+        // (o W5500 perde o MAC configurado se o chip resetar).
+        esp_err_t mac_err = esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, ctx->mac_addr);
+        esp_err_t ip_err = esp_netif_set_ip_info(ctx->netif, &ctx->ip_info);
+        if (mac_err != ESP_OK || ip_err != ESP_OK) {
+            ESP_LOGW(TAG, "[%s] Falha ao reaplicar MAC/IP no link up (mac=%s, ip=%s)",
+                     ctx->if_desc, esp_err_to_name(mac_err), esp_err_to_name(ip_err));
+        }
+
+        uint8_t mac_addr[6] = {0};
         esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
-        ESP_LOGI(TAG, "[%s] Link Up, MAC %02x:%02x:%02x:%02x:%02x:%02x",
-                 if_desc, mac_addr[0], mac_addr[1], mac_addr[2],
-                 mac_addr[3], mac_addr[4], mac_addr[5]);
+        ESP_LOGI(TAG, "[%s] Link Up, MAC %02x:%02x:%02x:%02x:%02x:%02x, IP " IPSTR,
+                 ctx->if_desc, mac_addr[0], mac_addr[1], mac_addr[2],
+                 mac_addr[3], mac_addr[4], mac_addr[5], IP2STR(&ctx->ip_info.ip));
         break;
+    }
     case ETHERNET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "[%s] Link Down", if_desc);
+        ESP_LOGW(TAG, "[%s] Link Down", ctx->if_desc);
         break;
     case ETHERNET_EVENT_START:
-        ESP_LOGI(TAG, "[%s] Started", if_desc);
+        ESP_LOGI(TAG, "[%s] Started", ctx->if_desc);
         break;
     case ETHERNET_EVENT_STOP:
-        ESP_LOGI(TAG, "[%s] Stopped", if_desc);
+        ESP_LOGI(TAG, "[%s] Stopped", ctx->if_desc);
         break;
     default:
         break;
@@ -48,12 +77,12 @@ static void got_ip_event_handler(void *arg, esp_event_base_t base, int32_t event
 {
     (void)base;
     (void)event_id;
-    const char *if_desc = (const char *)arg;
+    eth_w5500_ctx_t *ctx = (eth_w5500_ctx_t *)arg;
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     const esp_netif_ip_info_t *ip_info = &event->ip_info;
 
     ESP_LOGI(TAG, "[%s] Got IP: " IPSTR "  MASK: " IPSTR "  GW: " IPSTR,
-             if_desc, IP2STR(&ip_info->ip), IP2STR(&ip_info->netmask), IP2STR(&ip_info->gw));
+             ctx->if_desc, IP2STR(&ip_info->ip), IP2STR(&ip_info->netmask), IP2STR(&ip_info->gw));
 }
 
 esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
@@ -62,6 +91,13 @@ esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
         ESP_LOGE(TAG, "config NULL");
         return NULL;
     }
+
+    eth_w5500_ctx_t *ctx = calloc(1, sizeof(eth_w5500_ctx_t));
+    if (ctx == NULL) {
+        ESP_LOGE(TAG, "[%s] Falha de memoria ao alocar contexto", config->if_desc);
+        return NULL;
+    }
+    strlcpy(ctx->if_desc, config->if_desc, sizeof(ctx->if_desc));
 
     // --- SPI bus ---
     spi_bus_config_t buscfg = {
@@ -96,6 +132,7 @@ esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
     esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_config);
     if (mac == NULL || phy == NULL) {
         ESP_LOGE(TAG, "[%s] Falha ao criar MAC/PHY", config->if_desc);
+        free(ctx);
         return NULL;
     }
 
@@ -106,11 +143,11 @@ esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
     // --- MAC address: o W5500 não tem MAC de fábrica, então definimos
     // explicitamente a partir do MAC base do chip, com offset para
     // diferenciar as duas instâncias W5500. Sem isso as duas placas sobem
-    // com o mesmo MAC "placeholder" do driver. ---
-    uint8_t mac_addr[6];
-    ESP_ERROR_CHECK(esp_read_mac(mac_addr, ESP_MAC_ETH));
-    mac_addr[5] = (uint8_t)(mac_addr[5] + config->mac_addr_offset);
-    ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, mac_addr));
+    // com o mesmo MAC "placeholder" do driver. Guardamos em ctx->mac_addr
+    // pra poder reaplicar em todo ETHERNET_EVENT_CONNECTED (ver eth_event_handler). ---
+    ESP_ERROR_CHECK(esp_read_mac(ctx->mac_addr, ESP_MAC_ETH));
+    ctx->mac_addr[5] = (uint8_t)(ctx->mac_addr[5] + config->mac_addr_offset);
+    ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, ctx->mac_addr));
 
     // --- esp_netif com IP estático ---
     esp_netif_inherent_config_t base_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
@@ -127,8 +164,10 @@ esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
     esp_netif_t *eth_netif = esp_netif_new(&cfg);
     if (eth_netif == NULL) {
         ESP_LOGE(TAG, "[%s] esp_netif_new falhou", config->if_desc);
+        free(ctx);
         return NULL;
     }
+    ctx->netif = eth_netif;
 
     esp_netif_dns_info_t dns_info = {0};
     esp_netif_str_to_ip4(config->dns_addr, &dns_info.ip.u_addr.ip4);
@@ -137,29 +176,34 @@ esp_netif_t *eth_w5500_init(const eth_w5500_config_param_t *config)
     void *glue = esp_eth_new_netif_glue(eth_handle);
     if (glue == NULL) {
         ESP_LOGE(TAG, "[%s] esp_eth_new_netif_glue falhou", config->if_desc);
+        free(ctx);
         return NULL;
     }
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif, glue));
 
     ESP_ERROR_CHECK(esp_netif_dhcpc_stop(eth_netif));
 
-    esp_netif_ip_info_t ip_info = {0};
-    esp_netif_str_to_ip4(config->ip_addr, &ip_info.ip);
-    esp_netif_str_to_ip4(config->netmask_addr, &ip_info.netmask);
-    esp_netif_str_to_ip4(config->gw_addr, &ip_info.gw);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(eth_netif, &ip_info));
+    // Guardamos o ip_info em ctx (não só aplicamos uma vez) pra poder
+    // reaplicar em todo ETHERNET_EVENT_CONNECTED -- ver eth_event_handler.
+    esp_netif_str_to_ip4(config->ip_addr, &ctx->ip_info.ip);
+    esp_netif_str_to_ip4(config->netmask_addr, &ctx->ip_info.netmask);
+    esp_netif_str_to_ip4(config->gw_addr, &ctx->ip_info.gw);
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(eth_netif, &ctx->ip_info));
 
-    // Handlers específicos desta instância (arg = if_desc, usado só para log)
+    // Handlers específicos desta instância -- arg = ctx (alocado no heap,
+    // sobrevive à função que chamou eth_w5500_init, ao contrário de um
+    // ponteiro pra config/if_desc que morasse no stack de quem chamou).
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, (void *)config->if_desc, NULL));
+        ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, (void *)ctx, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, (void *)config->if_desc, NULL));
+        IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, (void *)ctx, NULL));
 
     ESP_LOGI(TAG, "[%s] Starting ETH driver...", config->if_desc);
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
     ESP_LOGI(TAG, "[%s] MAC = %02X:%02X:%02X:%02X:%02X:%02X", config->if_desc,
-             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+             ctx->mac_addr[0], ctx->mac_addr[1], ctx->mac_addr[2],
+             ctx->mac_addr[3], ctx->mac_addr[4], ctx->mac_addr[5]);
 
     return eth_netif;
 }

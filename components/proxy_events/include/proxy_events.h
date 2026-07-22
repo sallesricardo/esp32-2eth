@@ -12,6 +12,7 @@ extern "C" {
 ESP_EVENT_DECLARE_BASE(PROXY_EVENT);
 
 enum {
+    RECEIVED_COMMAND = 0,
     PROXY_EVENT_DATA_FROM_TCP_CLIENT,  // dado recebido do cliente TCP local (tcp_server_app)
     PROXY_EVENT_DATA_FROM_REMOTE_HOST, // dado recebido do host remoto (tcp_client_app)
 };

@@ -51,6 +51,16 @@ typedef struct {
  * Registra internamente os event handlers ETH_EVENT e IP_EVENT_ETH_GOT_IP
  * para esta instância específica, já logando com o if_desc correto.
  *
+ * A cada ETHERNET_EVENT_CONNECTED (link up -- inclusive religar o cabo depois
+ * de desconectado), reaplica o MAC e o IP estático corretos DESTA instância
+ * no handle que gerou o evento. Isso existe porque o W5500 guarda o MAC num
+ * registrador volátil (SHAR) que não sobrevive a um reset de hardware do
+ * chip -- então se o link cair de um jeito que reseta o chip (glitch de
+ * energia, RST), ele volta com MAC/IP não configurados até alguém
+ * reaplicar. Sem isso, a instância pode voltar respondendo com uma
+ * config errada (inclusive a de outra porta, se sobrar lixo de memória)
+ * até o próximo reboot do ESP32.
+ *
  * @param config Configuração da instância (ver eth_w5500_config_param_t)
  * @return Handle do esp_netif criado, ou NULL em caso de falha (com log de erro).
  */
