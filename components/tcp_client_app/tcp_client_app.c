@@ -46,9 +46,9 @@ typedef struct {
 // Máquina de Estados do Parser
 typedef enum {
     STATE_WAIT_HEADER,
+    STATE_WAIT_CMD,
     STATE_WAIT_LEN_H,
     STATE_WAIT_LEN_L,
-    STATE_WAIT_CMD,
     STATE_WAIT_FRAME,
     STATE_WAIT_PAYLOAD,
     STATE_WAIT_CHECKSUM,
@@ -88,48 +88,52 @@ static void reset_parser(protocol_parser_t *parser)
 static void process_byte(protocol_parser_t *parser, uint8_t b, tcp_client_data_cb_t callback)
 {
     switch (parser->state) {
-        case STATE_WAIT_HEADER:
+        case STATE_WAIT_HEADER: // 0
             if (b == FRAME_HEADER) {
                 reset_parser(parser);
                 // Captura cirúrgica do tempo no primeiro byte recebido do
                 // pacote -- é isso que mede a latência de ponta a ponta,
                 // não o instante em que o pacote termina de ser montado.
                 parser->start_timestamp_us = esp_timer_get_time();
-                parser->state = STATE_WAIT_LEN_H;
+                parser->state = STATE_WAIT_CMD;
+            } else {
+                ESP_LOGW(TAG, "Frame header inválido: 0x%02X", b);
+                reset_parser(parser);
             }
             break;
 
-        case STATE_WAIT_LEN_H:
-            parser->expected_payload_len = (uint16_t)(b << 8);
+        case STATE_WAIT_CMD: // 1
+            parser->command = b;
+            parser->calculated_checksum += b;
+            parser->state = STATE_WAIT_LEN_H;
+            break;
+
+        case STATE_WAIT_LEN_H: // 2
+            parser->expected_payload_len = 0xFF00 & (uint16_t)(b << 8);
             parser->calculated_checksum += b;
             parser->state = STATE_WAIT_LEN_L;
             break;
 
-        case STATE_WAIT_LEN_L:
-            parser->expected_payload_len |= b;
+        case STATE_WAIT_LEN_L: // 3
+            parser->expected_payload_len |= 0x00FF & (uint16_t)b;
             parser->calculated_checksum += b;
             if (parser->expected_payload_len > MAX_PAYLOAD_SIZE) {
                 ESP_LOGW(TAG, "Payload excedeu tamanho maximo (%d > %d). Descartando pacote.",
                          parser->expected_payload_len, MAX_PAYLOAD_SIZE);
                 reset_parser(parser);
             } else {
-                parser->state = STATE_WAIT_CMD;
+                parser->expected_payload_len -= 7; // bytes de header
+                parser->state = STATE_WAIT_FRAME;
             }
             break;
 
-        case STATE_WAIT_CMD:
-            parser->command = b;
-            parser->calculated_checksum += b;
-            parser->state = STATE_WAIT_FRAME;
-            break;
-
-        case STATE_WAIT_FRAME:
+        case STATE_WAIT_FRAME: // 4
             parser->frame_number = b;
             parser->calculated_checksum += b;
             parser->state = (parser->expected_payload_len > 0) ? STATE_WAIT_PAYLOAD : STATE_WAIT_CHECKSUM;
             break;
 
-        case STATE_WAIT_PAYLOAD:
+        case STATE_WAIT_PAYLOAD: // 5
             parser->payload[parser->payload_index++] = b;
             parser->calculated_checksum += b;
             if (parser->payload_index >= parser->expected_payload_len) {
@@ -159,6 +163,7 @@ static void process_byte(protocol_parser_t *parser, uint8_t b, tcp_client_data_c
                          b, FRAME_FOOTER);
             }
             reset_parser(parser);
+            vTaskDelay(1);
             break;
     }
 }
